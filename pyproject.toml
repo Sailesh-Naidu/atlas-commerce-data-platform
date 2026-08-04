@@ -1,0 +1,41 @@
+[project]
+name = "atlas"
+version = "0.1.0"
+description = "Enterprise Data Platform for batch and streaming analytics."
+readme = "README.md"
+authors = [
+    { name = "saileshpola", email = "saileshnaidu25@gmail.com" }
+]
+requires-python = ">=3.11, <3.12"
+dependencies = []
+
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.1",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # Pyflakes
+    "I",    # import sorting
+    "B",    # bugbear
+    "UP",   # Python upgrades
+    "SIM",  # simplification
+    "RUF",  # Ruff-specific rules
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
