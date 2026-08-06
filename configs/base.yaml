@@ -1,0 +1,5 @@
+application:
+  name: Atlas
+
+spark:
+  session_timezone: UTC

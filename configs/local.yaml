@@ -1,0 +1,16 @@
+application:
+  environment: local
+
+spark:
+  master: local[*]
+  shuffle_partitions: 8
+
+storage:
+  lakehouse_root: ./lakehouse
+  checkpoint_root: ./checkpoint
+  quarantine_root: ./quarantine
+
+logging:
+  level: DEBUG
+  output_format: console
+  log_directory: ./log
