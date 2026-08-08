@@ -24,6 +24,8 @@ class SparkSettings(AtlasBaseSettings):
     master: str = Field(min_length=1)
     shuffle_partitions: int = Field(gt=0)
     session_timezone: str
+    broadcast_size_mb: int = Field(gt=10)
+    adaptive_query_execution: bool = True
 
 
 class StorageSettings(AtlasBaseSettings):

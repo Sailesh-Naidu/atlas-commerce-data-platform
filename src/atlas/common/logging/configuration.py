@@ -42,9 +42,17 @@ def configure_logging(logging_settings: LoggingSettings) -> None:
 def _create_formatter(logging_settings: LoggingSettings) -> logging.Formatter:
     """Return the configured logging formatter."""
     if logging_settings.format == "text":
-        format_string = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-        return logging.Formatter(fmt=format_string, datefmt="%Y-%m-%d %H:%M:%S")
-
+        return structlog.stdlib.ProcessorFormatter(
+            foreign_pre_chain=[
+                structlog.stdlib.add_logger_name,
+                structlog.stdlib.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso", utc=True),
+            ],
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.dev.ConsoleRenderer(colors=True),
+            ],
+        )
     shared_processors = [
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,

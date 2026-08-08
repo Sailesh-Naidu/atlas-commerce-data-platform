@@ -4,6 +4,8 @@ application:
 spark:
   master: local[*]
   shuffle_partitions: 8
+  broadcast_size_mb: 20
+  adaptive_query_execution: True
 
 storage:
   lakehouse_root: ./lakehouse
@@ -11,7 +13,7 @@ storage:
   quarantine_root: ./quarantine
 
 logging:
-  level: WARNING
-  format: json
+  level: INFO
+  format: text
   log_directory: ./log
   destination: console

@@ -6,13 +6,12 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from atlas.common.config.models import AtlasSettings
-
-from .exceptions import (
+from atlas.common.config.exceptions import (
     ConfigurationFileNotFoundError,
     ConfigurationParseError,
     ConfigurationValidationError,
 )
+from atlas.common.config.models import AtlasSettings
 
 project_root = Path(__file__).resolve().parents[4]
 
@@ -46,7 +45,7 @@ def _load_yaml(yaml_file: Path) -> dict[str, Any]:
         raise ConfigurationParseError(f"Configuration file is not valid YAML: {yaml_file}") from error
 
 
-def _merge_configs(base_config: dict, env_config: dict) -> dict[str, Any]:
+def _merge_configs(base_config: dict[str, Any], env_config: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge environment settings over base settings.
 
     Nested dictionaries are merged recursively. For all other values,
@@ -85,7 +84,7 @@ def _load_project_metadata(pyproject_path: Path) -> dict[str, str]:
             If the file contains invalid YAML or does not contain a mapping.
     """
     if not pyproject_path.exists():
-        raise ConfigurationFileNotFoundError(f"configuration file not found:{pyproject_path}")
+        raise ConfigurationFileNotFoundError(f"configuration file not found: {pyproject_path}")
     try:
         with pyproject_path.open("rb") as stream:
             toml_data = tomllib.load(stream)
@@ -95,10 +94,10 @@ def _load_project_metadata(pyproject_path: Path) -> dict[str, str]:
             return project_metadata
 
     except tomllib.TOMLDecodeError as error:
-        raise ConfigurationParseError(f"Configuration file is not valid YAML: {pyproject_path}") from error
+        raise ConfigurationParseError(f"Configuration file is not valid TOML: {pyproject_path}") from error
 
     except KeyError as error:
-        raise ConfigurationParseError("Configuration key not found") from error
+        raise ConfigurationParseError(f"Required project metadata is missing: {error}") from error
 
 
 @lru_cache(maxsize=8)
