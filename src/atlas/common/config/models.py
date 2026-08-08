@@ -38,8 +38,9 @@ class LoggingSettings(AtlasBaseSettings):
     """Structured logging configuration."""
 
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-    output_format: Literal["json", "console"]
+    format: Literal["json", "text"]
     log_directory: Path
+    destination: Literal["console", "file", "both"] = "console"
 
 
 class AtlasSettings(AtlasBaseSettings):

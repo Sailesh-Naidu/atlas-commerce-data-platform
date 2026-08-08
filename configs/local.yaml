@@ -11,6 +11,7 @@ storage:
   quarantine_root: ./quarantine
 
 logging:
-  level: DEBUG
-  output_format: console
+  level: WARNING
+  format: json
   log_directory: ./log
+  destination: console

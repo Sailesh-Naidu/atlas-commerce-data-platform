@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "pyyaml>=6.0.3",
+    "structlog>=26.1.0",
 ]
 
 
@@ -26,7 +27,7 @@ dev = [
 
 [tool.ruff]
 target-version = "py311"
-line-length = 88
+line-length = 120
 src = ["src"]
 
 [tool.ruff.lint]
@@ -39,6 +40,9 @@ select = [
     "SIM",  # simplification
     "RUF",  # Ruff-specific rules
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
 
 [tool.ruff.format]
 quote-style = "double"
