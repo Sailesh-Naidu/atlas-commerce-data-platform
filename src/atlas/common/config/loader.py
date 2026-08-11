@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
+
 
 from atlas.common.config.exceptions import (
     ConfigurationFileNotFoundError,
@@ -12,6 +12,9 @@ from atlas.common.config.exceptions import (
     ConfigurationValidationError,
 )
 from atlas.common.config.models import AtlasSettings
+
+from pydantic import Field, SecretStr, ValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 project_root = Path(__file__).resolve().parents[4]
 
@@ -81,7 +84,7 @@ def _load_project_metadata(pyproject_path: Path) -> dict[str, str]:
             If the configuration file does not exist.
 
         ConfigurationParseError:
-            If the file contains invalid YAML or does not contain a mapping.
+            If the file contains invalid TOML or does not contain a mapping.
     """
     if not pyproject_path.exists():
         raise ConfigurationFileNotFoundError(f"configuration file not found: {pyproject_path}")
@@ -99,6 +102,17 @@ def _load_project_metadata(pyproject_path: Path) -> dict[str, str]:
     except KeyError as error:
         raise ConfigurationParseError(f"Required project metadata is missing: {error}") from error
 
+class _EnvironmentSecrets(BaseSettings):
+    """Secrets loaded from the local environment file or process environment."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    minio_access_key: str = Field(
+        validation_alias="MINIO_ROOT_USER"
+    )
+    minio_secret_key: SecretStr = Field(
+        validation_alias="MINIO_ROOT_PASSWORD"
+    )
 
 @lru_cache(maxsize=8)
 def _get_settings_cached(base_yaml: Path, env_yaml: Path, pyproject_path: Path) -> AtlasSettings:
@@ -124,6 +138,14 @@ def _get_settings_cached(base_yaml: Path, env_yaml: Path, pyproject_path: Path) 
     base_config = _load_yaml(base_yaml)
     env_config = _load_yaml(env_yaml)
     atlas_config = _merge_configs(base_config, env_config)
+    storage_mode = atlas_config.get("storage", {}).get("mode", "local")
+    if storage_mode == "object_store":
+        environment_secrets = _EnvironmentSecrets(
+            _env_file=pyproject_path.parent / ".env",
+            _env_file_encoding="utf-8",
+        )
+        atlas_config["storage"]["access_key"] = environment_secrets.minio_access_key
+        atlas_config["storage"]["secret_key"] = environment_secrets.minio_secret_key
     atlas_config["application"]["app_version"] = project_metadata["version"]
     try:
         return AtlasSettings(**atlas_config)
@@ -150,3 +172,4 @@ def get_settings(base_yaml: str | Path, env_yaml: str | Path, pyproject_path: st
 
     """
     return _get_settings_cached(Path(base_yaml).resolve(), Path(env_yaml).resolve(), Path(pyproject_path).resolve())
+

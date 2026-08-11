@@ -8,9 +8,14 @@ spark:
   adaptive_query_execution: True
 
 storage:
-  lakehouse_root: ./lakehouse
-  checkpoint_root: ./checkpoint
-  quarantine_root: ./quarantine
+  mode: object_store
+  lakehouse_root: data/lakehouse
+  checkpoint_root: data/checkpoint
+  quarantine_root: data/quarantine
+
+  endpoint: http://localhost:9000
+  bucket: atlas-lakehouse
+
 
 logging:
   level: INFO

@@ -1,7 +1,9 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import model_validator
+
 
 
 class AtlasBaseSettings(BaseModel):
@@ -31,9 +33,32 @@ class SparkSettings(AtlasBaseSettings):
 class StorageSettings(AtlasBaseSettings):
     """Storage locations used by Atlas pipelines."""
 
+    mode: Literal["local","object_store"] = "local"
     lakehouse_root: Path
     checkpoint_root: Path
     quarantine_root: Path
+
+    endpoint: str | None = None
+    bucket: str | None = None
+    access_key: str | None = None
+    secret_key: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def validate_object_store_configuration(self):
+        if self.mode == "local":
+            return self
+        if self.mode == "object_store":
+            required_fields = {"endpoint": self.endpoint, "bucket": self.bucket, "access_key": self.access_key,
+                               "secret_key": self.secret_key}
+            missing_fields = [
+                field_name
+                for field_name, value in required_fields.items()
+                if value is None
+            ]
+            if missing_fields:
+                raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
+            return self
+        return self
 
 
 class LoggingSettings(AtlasBaseSettings):
