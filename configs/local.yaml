@@ -1,0 +1,24 @@
+application:
+  environment: local
+
+spark:
+  master: local[*]
+  shuffle_partitions: 8
+  broadcast_size_mb: 20
+  adaptive_query_execution: True
+
+storage:
+  mode: object_store
+  lakehouse_root: data/lakehouse
+  checkpoint_root: data/checkpoint
+  quarantine_root: data/quarantine
+
+  endpoint: http://localhost:9000
+  bucket: atlas-lakehouse
+
+
+logging:
+  level: INFO
+  format: text
+  log_directory: ./log
+  destination: console
