@@ -102,17 +102,15 @@ def _load_project_metadata(pyproject_path: Path) -> dict[str, str]:
     except KeyError as error:
         raise ConfigurationParseError(f"Required project metadata is missing: {error}") from error
 
+
 class _EnvironmentSecrets(BaseSettings):
     """Secrets loaded from the local environment file or process environment."""
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    minio_access_key: str = Field(
-        validation_alias="MINIO_ROOT_USER"
-    )
-    minio_secret_key: SecretStr = Field(
-        validation_alias="MINIO_ROOT_PASSWORD"
-    )
+    minio_access_key: str = Field(validation_alias="MINIO_ROOT_USER")
+    minio_secret_key: SecretStr = Field(validation_alias="MINIO_ROOT_PASSWORD")
+
 
 @lru_cache(maxsize=8)
 def _get_settings_cached(base_yaml: Path, env_yaml: Path, pyproject_path: Path) -> AtlasSettings:
@@ -172,4 +170,3 @@ def get_settings(base_yaml: str | Path, env_yaml: str | Path, pyproject_path: st
 
     """
     return _get_settings_cached(Path(base_yaml).resolve(), Path(env_yaml).resolve(), Path(pyproject_path).resolve())
-

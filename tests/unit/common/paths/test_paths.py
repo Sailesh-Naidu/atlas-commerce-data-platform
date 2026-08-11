@@ -15,11 +15,7 @@ def local_paths():
     )
 
     local_settings = atlas_settings.model_copy(
-        update={
-            "storage": atlas_settings.storage.model_copy(
-                update={"mode": "local"}
-            )
-        }
+        update={"storage": atlas_settings.storage.model_copy(update={"mode": "local"})}
     )
 
     return get_paths(local_settings)
@@ -47,11 +43,10 @@ def object_store_paths():
     return get_paths(object_store_settings)
 
 
-
 @pytest.mark.parametrize(
     ("layer", "expected"),
     [
-        ("bronze", "data/lakehouse/bronze/customer" ),
+        ("bronze", "data/lakehouse/bronze/customer"),
         ("silver", "data/lakehouse/silver/customer"),
         ("gold", "data/lakehouse/gold/customer"),
     ],
@@ -71,6 +66,7 @@ def test_quarantine_path(local_paths) -> None:
 def test_checkpoint_path(local_paths) -> None:
     actual_path = local_paths.checkpoint_path("customer")
     assert actual_path == "data/checkpoint/customer"
+
 
 @pytest.mark.parametrize(
     ("layer", "expected"),
@@ -93,5 +89,5 @@ def test_object_store_checkpoint_path(object_store_paths) -> None:
 
 
 def test_object_store_quarantine_path(object_store_paths) -> None:
-    actual_path = (object_store_paths.quarantine_path("customer"))
+    actual_path = object_store_paths.quarantine_path("customer")
     assert actual_path == "s3a://atlas-lakehouse/quarantine/customer"

@@ -16,6 +16,8 @@ def settings():
         project_root / "pyproject.toml",
     )
     return settings
+
+
 @pytest.fixture
 def spark(settings):
     spark_session = get_spark_session(settings.spark, settings.storage, settings.application.name)
@@ -24,6 +26,7 @@ def spark(settings):
 
     spark_session.stop()
     get_spark_session.cache_clear()
+
 
 def test_spark_session_is_created(spark) -> None:
     assert isinstance(spark, SparkSession)
@@ -42,23 +45,21 @@ def test_spark_aqe_enabled(spark) -> None:
 
 
 def test_delta_local_write_and_read(tmp_path: Path, spark) -> None:
-    data = [{"name":"sailesh", "age":30},{"name":"pola", "age":32}]
+    data = [{"name": "sailesh", "age": 30}, {"name": "pola", "age": 32}]
     df = spark.createDataFrame(data)
     delta_path = tmp_path / "delta_smoke"
 
     df.write.format("delta").mode("overwrite").save(str(delta_path))
     actual_df = spark.read.format("delta").load(str(delta_path))
 
-    actual = {
-        (row["name"], row["age"])
-        for row in actual_df.collect()
-    }
+    actual = {(row["name"], row["age"]) for row in actual_df.collect()}
     expected = {
         ("sailesh", 30),
         ("pola", 32),
     }
 
     assert actual == expected
+
 
 def test_delta_named_table_write_and_read(tmp_path: Path, spark) -> None:
     namespace = "smoke"
@@ -71,20 +72,14 @@ def test_delta_named_table_write_and_read(tmp_path: Path, spark) -> None:
     ]
     df = spark.createDataFrame(data)
 
-    spark.sql(
-        f"CREATE DATABASE IF NOT EXISTS {namespace} "
-        f"LOCATION '{namespace_path.as_uri()}'"
-    )
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS {namespace} LOCATION '{namespace_path.as_uri()}'")
 
     try:
         df.write.format("delta").mode("overwrite").saveAsTable(table_name)
 
         actual_df = spark.table(table_name)
 
-        actual = {
-            (row["customer_id"], row["name"])
-            for row in actual_df.collect()
-        }
+        actual = {(row["customer_id"], row["name"]) for row in actual_df.collect()}
 
         expected = {
             (1, "sailesh"),
@@ -96,6 +91,7 @@ def test_delta_named_table_write_and_read(tmp_path: Path, spark) -> None:
     finally:
         spark.sql(f"DROP TABLE IF EXISTS {table_name}")
         spark.sql(f"DROP DATABASE IF EXISTS {namespace}")
+
 
 def test_delta_minio_write_and_read(spark, settings) -> None:
     delta_path = get_paths(settings)
@@ -111,10 +107,7 @@ def test_delta_minio_write_and_read(spark, settings) -> None:
 
     actual_df = spark.read.format("delta").load(actual_delta_path)
 
-    actual = {
-        (row["customer_id"], row["name"])
-        for row in actual_df.collect()
-    }
+    actual = {(row["customer_id"], row["name"]) for row in actual_df.collect()}
 
     expected = {
         (1, "sailesh"),

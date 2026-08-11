@@ -40,4 +40,3 @@ class AtlasPaths:
     def quarantine_path(self, name: str) -> str:
         """Return the quarantine path for the specified domain."""
         return self._join_path(self._quarantine_root, name)
-

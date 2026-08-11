@@ -6,6 +6,7 @@ from atlas.common.config.exceptions import ConfigurationFileNotFoundError
 from atlas.common.config.loader import _merge_configs, get_settings
 from atlas.common.config.exceptions import ConfigurationValidationError
 
+
 def test_merge_configs_recursively_overrides_environment_values() -> None:
     """Environment values should override base values without removing defaults."""
     base_config = {
@@ -129,6 +130,7 @@ version = "0.1.0"
 
     return base_path, local_path, pyproject_path
 
+
 def test_local_storage_does_not_require_object_store_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -175,6 +177,7 @@ def test_object_store_loads_credentials_from_environment(
     assert settings.storage.secret_key is not None
     assert settings.storage.secret_key.get_secret_value() == "test_password"
 
+
 def test_object_store_requires_bucket(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -189,12 +192,11 @@ def test_object_store_requires_bucket(
     )
 
     with pytest.raises(
-            ConfigurationValidationError,
-            match="bucket",
+        ConfigurationValidationError,
+        match="bucket",
     ):
         get_settings(
             base_path,
             local_path,
             pyproject_path,
-
         )

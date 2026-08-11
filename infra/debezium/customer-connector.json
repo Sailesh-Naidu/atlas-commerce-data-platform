@@ -1,0 +1,22 @@
+{
+  "name": "atlas-customer-postgres-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "debezium",
+    "database.password": "debezium_local",
+    "database.dbname": "atlas",
+
+    "topic.prefix": "atlas.customer",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "atlas_customer_publication",
+    "slot.name": "atlas_customer_slot",
+
+    "table.include.list": "public.customers,public.customer_addresses,public.customer_consents",
+
+    "snapshot.mode": "initial"
+  }
+}

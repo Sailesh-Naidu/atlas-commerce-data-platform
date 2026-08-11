@@ -18,7 +18,7 @@ def get_paths(settings: AtlasSettings) -> AtlasPaths:
     if settings.storage.mode == "object_store":
         base_path = f"s3a://{settings.storage.bucket}"
         return AtlasPaths(
-            lakehouse_root= base_path,
+            lakehouse_root=base_path,
             checkpoint_root=f"{base_path}/checkpoints",
             quarantine_root=f"{base_path}/quarantine",
         )
