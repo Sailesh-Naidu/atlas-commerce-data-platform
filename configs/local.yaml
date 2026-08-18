@@ -8,7 +8,7 @@ spark:
   adaptive_query_execution: True
 
 storage:
-  mode: object_store
+  mode: local
   lakehouse_root: data/lakehouse
   checkpoint_root: data/checkpoint
   quarantine_root: data/quarantine
@@ -22,3 +22,6 @@ logging:
   format: text
   log_directory: ./log
   destination: console
+
+kafka:
+  bootstrap_servers: localhost:9092

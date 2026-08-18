@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
+from pydantic import Field, SecretStr, ValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from atlas.common.config.exceptions import (
     ConfigurationFileNotFoundError,
@@ -12,11 +13,6 @@ from atlas.common.config.exceptions import (
     ConfigurationValidationError,
 )
 from atlas.common.config.models import AtlasSettings
-
-from pydantic import Field, SecretStr, ValidationError
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-project_root = Path(__file__).resolve().parents[4]
 
 
 def _load_yaml(yaml_file: Path) -> dict[str, Any]:
@@ -135,8 +131,24 @@ def _get_settings_cached(base_yaml: Path, env_yaml: Path, pyproject_path: Path) 
     project_metadata = _load_project_metadata(pyproject_path)
     base_config = _load_yaml(base_yaml)
     env_config = _load_yaml(env_yaml)
+
     atlas_config = _merge_configs(base_config, env_config)
-    storage_mode = atlas_config.get("storage", {}).get("mode", "local")
+
+    project_root = pyproject_path.parent
+    storage_config = atlas_config.get("storage", {})
+    storage_mode = storage_config.get("mode", "local")
+
+    if storage_mode == "local":
+        for path_key in (
+                "lakehouse_root",
+                "checkpoint_root",
+                "quarantine_root",
+        ):
+            configured_path = Path(storage_config[path_key])
+
+            if not configured_path.is_absolute():
+                storage_config[path_key] = str(project_root / configured_path)
+
     if storage_mode == "object_store":
         environment_secrets = _EnvironmentSecrets(
             _env_file=pyproject_path.parent / ".env",
@@ -144,15 +156,28 @@ def _get_settings_cached(base_yaml: Path, env_yaml: Path, pyproject_path: Path) 
         )
         atlas_config["storage"]["access_key"] = environment_secrets.minio_access_key
         atlas_config["storage"]["secret_key"] = environment_secrets.minio_secret_key
+
     atlas_config["application"]["app_version"] = project_metadata["version"]
+
     try:
         return AtlasSettings(**atlas_config)
     except ValidationError as error:
-        error_messages = [f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}" for item in error.errors()]
+        error_messages = [
+            f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+            for item in error.errors()
+        ]
         raise ConfigurationValidationError(
-            "Configuration values failed validation:\n" + "\n".join(error_messages)
+            "Configuration values failed validation:\n"
+            + "\n".join(error_messages)
         ) from error
 
+def _find_project_root() -> Path:
+    """Returns the project root directory."""
+    project_root = Path.cwd()
+
+    while not (project_root / "pyproject.toml").exists():
+        project_root = project_root.parent
+    return project_root
 
 def get_settings(base_yaml: str | Path, env_yaml: str | Path, pyproject_path: str | Path) -> AtlasSettings:
     """Return cached Atlas settings for the supplied configuration files.
@@ -169,4 +194,10 @@ def get_settings(base_yaml: str | Path, env_yaml: str | Path, pyproject_path: st
         Validated and immutable Atlas settings.
 
     """
-    return _get_settings_cached(Path(base_yaml).resolve(), Path(env_yaml).resolve(), Path(pyproject_path).resolve())
+    project_root = _find_project_root()
+    return _get_settings_cached(
+        (project_root / base_yaml).resolve(),
+        (project_root / env_yaml).resolve(),
+        (project_root / pyproject_path).resolve(),
+
+    )

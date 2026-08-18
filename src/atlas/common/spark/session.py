@@ -1,9 +1,9 @@
 from functools import lru_cache
 
+from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 
 from atlas.common.config.models import SparkSettings, StorageSettings
-from delta import configure_spark_with_delta_pip
 
 
 @lru_cache(maxsize=32)
@@ -33,11 +33,8 @@ def get_spark_session(spark_settings: SparkSettings, storage_settings: StorageSe
         builder = builder.config("spark.hadoop.fs.s3a.secret.key", storage_settings.secret_key.get_secret_value())
         builder = builder.config("spark.hadoop.fs.s3a.path.style.access", "true")
         builder = builder.config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-    builder = configure_spark_with_delta_pip(
-        builder,
-        extra_packages=[
-            "org.apache.hadoop:hadoop-aws:3.4.1",
-        ],
-    )
+    builder = configure_spark_with_delta_pip(builder,extra_packages=["org.apache.hadoop:hadoop-aws:3.4.1",
+                                                                     "org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.4"],)
+
 
     return builder.getOrCreate()

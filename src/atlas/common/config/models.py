@@ -1,8 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from pydantic import model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class AtlasBaseSettings(BaseModel):
@@ -68,11 +67,19 @@ class LoggingSettings(AtlasBaseSettings):
     log_directory: Path
     destination: Literal["console", "file", "both"] = "console"
 
+class KafkaSettings(AtlasBaseSettings):
+    """Kafka configuration settings."""
+    bootstrap_servers: str
+
+class CustomerSettings(AtlasBaseSettings):
+    """Customer-level configuration settings."""
+    cdc_topic: str
 
 class AtlasSettings(AtlasBaseSettings):
     """Root configuration object for the Atlas platform."""
-
     application: ApplicationSettings
     spark: SparkSettings
     storage: StorageSettings
     logging: LoggingSettings
+    kafka: KafkaSettings
+    customer:CustomerSettings

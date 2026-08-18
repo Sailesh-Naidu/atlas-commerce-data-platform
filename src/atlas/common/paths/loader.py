@@ -1,5 +1,4 @@
 from functools import lru_cache
-from pathlib import Path
 
 from atlas.common.config.models import AtlasSettings
 from atlas.common.paths.paths import AtlasPaths

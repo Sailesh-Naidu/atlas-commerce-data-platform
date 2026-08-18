@@ -3,3 +3,6 @@ application:
 
 spark:
   session_timezone: UTC
+
+customer:
+  cdc_topic: atlas.customer.public.customers

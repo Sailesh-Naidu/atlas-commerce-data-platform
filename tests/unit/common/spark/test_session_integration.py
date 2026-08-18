@@ -1,9 +1,11 @@
 from pathlib import Path
+
 import pytest
 from pyspark.sql import SparkSession
+
 from atlas.common.config.loader import get_settings
-from atlas.common.spark.session import get_spark_session
 from atlas.common.paths.loader import get_paths
+from atlas.common.spark.session import get_spark_session
 
 project_root = Path(__file__).resolve().parents[4]
 

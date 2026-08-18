@@ -1,7 +1,9 @@
-import pytest
-from atlas.common.paths.loader import get_paths
-from atlas.common.config.loader import get_settings
 from pathlib import Path
+
+import pytest
+
+from atlas.common.config.loader import get_settings
+from atlas.common.paths.loader import get_paths
 
 project_root = Path(__file__).resolve().parents[4]
 

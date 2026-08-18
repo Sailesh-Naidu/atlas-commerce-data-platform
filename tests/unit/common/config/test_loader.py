@@ -2,9 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from atlas.common.config.exceptions import ConfigurationFileNotFoundError
+from atlas.common.config.exceptions import ConfigurationFileNotFoundError, ConfigurationValidationError
 from atlas.common.config.loader import _merge_configs, get_settings
-from atlas.common.config.exceptions import ConfigurationValidationError
 
 
 def test_merge_configs_recursively_overrides_environment_values() -> None:
