@@ -22,11 +22,13 @@ def customer_cdc_read_stream(spark: SparkSession, bootstrap_servers: str,
                        .option("kafka.bootstrap.servers", bootstrap_servers)
                        .option("subscribe", cdc_topic_name)
                        .option("startingOffsets", "earliest")
+                       .option("includeHeaders", True)
                        .load()
             )
 
     customer_stream_parsed = (customer_raw_stream
                               .selectExpr("CAST(key as String) AS raw_key", "CAST(value as String) AS raw_value",
+                                                    "headers as kafka_headers",
                                                     " topic AS kafka_topic", "partition AS kafka_partition",
                                                     "offset AS kafka_offset", "timestamp AS kafka_timestamp"))
 
