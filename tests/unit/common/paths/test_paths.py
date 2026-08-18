@@ -11,9 +11,9 @@ project_root = Path(__file__).resolve().parents[4]
 @pytest.fixture
 def local_paths():
     atlas_settings = get_settings(
-        Path(project_root / "configs" / "base.yaml"),
-        Path(project_root / "configs" / "local.yaml"),
-        Path(project_root / "pyproject.toml"),
+        Path("configs/base.yaml"),
+        Path("configs/local.yaml"),
+        Path("pyproject.toml"),
     )
 
     local_settings = atlas_settings.model_copy(
@@ -26,9 +26,9 @@ def local_paths():
 @pytest.fixture
 def object_store_paths():
     atlas_settings = get_settings(
-        Path(project_root / "configs" / "base.yaml"),
-        Path(project_root / "configs" / "local.yaml"),
-        Path(project_root / "pyproject.toml"),
+        Path("configs/base.yaml"),
+        Path("configs/local.yaml"),
+        Path("pyproject.toml"),
     )
 
     object_store_settings = atlas_settings.model_copy(
@@ -48,9 +48,9 @@ def object_store_paths():
 @pytest.mark.parametrize(
     ("layer", "expected"),
     [
-        ("bronze", "data/lakehouse/bronze/customer"),
-        ("silver", "data/lakehouse/silver/customer"),
-        ("gold", "data/lakehouse/gold/customer"),
+        ("bronze", str(project_root/"data/lakehouse/bronze/customer")),
+        ("silver", str(project_root/"data/lakehouse/silver/customer")),
+        ("gold", str(project_root/"data/lakehouse/gold/customer")),
     ],
 )
 def test_lakehouse_path(layer, expected, local_paths) -> None:
@@ -62,12 +62,12 @@ def test_lakehouse_path(layer, expected, local_paths) -> None:
 
 def test_quarantine_path(local_paths) -> None:
     actual_path = local_paths.quarantine_path("customer")
-    assert actual_path == "data/quarantine/customer"
+    assert actual_path == str(project_root/"data/quarantine/customer")
 
 
 def test_checkpoint_path(local_paths) -> None:
     actual_path = local_paths.checkpoint_path("customer")
-    assert actual_path == "data/checkpoint/customer"
+    assert actual_path == str(project_root/"data/checkpoint/customer")
 
 
 @pytest.mark.parametrize(

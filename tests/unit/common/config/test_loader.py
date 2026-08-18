@@ -89,6 +89,9 @@ application:
 
 spark:
   session_timezone: UTC
+
+customer:
+  cdc_topic: atlas.customer.public.customers
 """.strip()
     )
 
@@ -116,6 +119,9 @@ logging:
   format: text
   log_directory: ./log
   destination: console
+
+kafka:
+  bootstrap_servers: localhost:9092
 """.strip()
     )
 
