@@ -91,7 +91,9 @@ spark:
   session_timezone: UTC
 
 customer:
-  cdc_topic: atlas.customer.public.customers
+  customers_topic: atlas.customer.public.customers
+  customer_addresses_topic: atlas.customer.public.customer_addresses
+  customer_consents_topic: atlas.customer.public.customer_consents
 """.strip()
     )
 
