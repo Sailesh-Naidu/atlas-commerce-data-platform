@@ -73,7 +73,9 @@ class KafkaSettings(AtlasBaseSettings):
 
 class CustomerSettings(AtlasBaseSettings):
     """Customer-level configuration settings."""
-    cdc_topic: str
+    customers_topic: str
+    customer_addresses_topic: str
+    customer_consents_topic: str
 
 class AtlasSettings(AtlasBaseSettings):
     """Root configuration object for the Atlas platform."""

@@ -1,10 +1,8 @@
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from atlas.common.config.loader import get_settings
 from atlas.common.config.models import AtlasSettings
 from atlas.common.paths.loader import get_paths
-from atlas.common.spark.session import get_spark_session
 
 
 def customer_cdc_read_stream(spark: SparkSession, bootstrap_servers: str,
@@ -65,35 +63,21 @@ def customer_cdc_write_stream(customer_data_bronze: DataFrame, customer_data_pat
     query.awaitTermination()
 
 
-def get_customer_paths(settings: AtlasSettings)  -> tuple[str, str]:
+def get_customer_paths(settings: AtlasSettings, entity_name: str)  -> tuple[str, str]:
     """Build storage paths for the customer CDC bronze job.
     Args:
         settings: Validated Atlas application settings.
+        entity_name: Name of entity folder to write data
 
     Returns:
         Tuple containing the customer bronze data path and checkpoint path.
 
+
     """
     paths = get_paths(settings)
-    return paths.bronze_path("customer/cdc/customers/job"), paths.checkpoint_path("customer/cdc/customers/job")
+    return (paths.bronze_path(f"customer/cdc/{entity_name}/job"),
+            paths.checkpoint_path(f"customer/cdc/{entity_name}/job"))
 
-
-def customer_cdc_bronze() -> None:
-    """Run the customer CDC bronze ingestion job.
-        Loads application settings, initializes Spark, reads customer CDC events
-        from Kafka, and writes the raw events to the bronze storage layer.
-        """
-    settings = get_settings("configs/base.yaml", "configs/local.yaml", "pyproject.toml")
-    spark = get_spark_session(settings.spark, settings.storage, settings.application.name)
-
-    customer_data_bronze = customer_cdc_read_stream(spark, settings.kafka.bootstrap_servers,
-                                                    settings.customer.cdc_topic)
-
-    customer_data_path, customer_checkpoint_path = get_customer_paths(settings)
-    customer_cdc_write_stream(customer_data_bronze, customer_data_path, customer_checkpoint_path)
-
-if __name__ == "__main__":
-    customer_cdc_bronze()
 
 
 
