@@ -1,10 +1,9 @@
 from atlas.bronze.customer.cdc.jobs.customer_cdc_common import (
     customer_cdc_read_stream,
     customer_cdc_write_stream,
-    get_customer_paths,
 )
-from atlas.common.config.loader import get_settings
-from atlas.common.spark.session import get_spark_session
+from atlas.common.paths.get_cdc_paths import get_bronze_paths
+from atlas.common.spark.bootstrap_initialization import initialize_atlas
 
 
 def customer_consents_cdc_bronze() -> None:
@@ -12,13 +11,13 @@ def customer_consents_cdc_bronze() -> None:
         Loads application settings, initializes Spark, reads customer CDC events
         from Kafka, and writes the raw events to the bronze storage layer.
         """
-    settings = get_settings("configs/base.yaml", "configs/local.yaml", "pyproject.toml")
-    spark = get_spark_session(settings.spark, settings.storage, settings.application.name)
+    settings, spark = initialize_atlas()
 
     customer_data_bronze = customer_cdc_read_stream(spark, settings.kafka.bootstrap_servers,
                                                     settings.customer.customer_consents_topic)
 
-    customer_consents_data_path, customer_consents_checkpoint_path = get_customer_paths(settings, "customer_consents")
+    customer_consents_data_path, customer_consents_checkpoint_path = get_bronze_paths(settings, "customer",
+                                                                                   "customer_consents")
     customer_cdc_write_stream(customer_data_bronze, customer_consents_data_path, customer_consents_checkpoint_path)
 
 if __name__ == "__main__":

@@ -1,9 +1,6 @@
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from atlas.common.config.models import AtlasSettings
-from atlas.common.paths.loader import get_paths
-
 
 def customer_cdc_read_stream(spark: SparkSession, bootstrap_servers: str,
                              cdc_topic_name: str) -> DataFrame:
@@ -63,20 +60,7 @@ def customer_cdc_write_stream(customer_data_bronze: DataFrame, customer_data_pat
     query.awaitTermination()
 
 
-def get_customer_paths(settings: AtlasSettings, entity_name: str)  -> tuple[str, str]:
-    """Build storage paths for the customer CDC bronze job.
-    Args:
-        settings: Validated Atlas application settings.
-        entity_name: Name of entity folder to write data
 
-    Returns:
-        Tuple containing the customer bronze data path and checkpoint path.
-
-
-    """
-    paths = get_paths(settings)
-    return (paths.bronze_path(f"customer/cdc/{entity_name}/job"),
-            paths.checkpoint_path(f"customer/cdc/{entity_name}/job"))
 
 
 
