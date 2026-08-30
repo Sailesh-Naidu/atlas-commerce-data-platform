@@ -21,7 +21,7 @@ def build_customer_address_schema() -> StructType:
         StructField("address_line_1", StringType(), False),
         StructField("address_line_2", StringType(), True),
         StructField("city", StringType(), False),
-        StructField("state", StringType(), False),
+        StructField("state", StringType(), True),
         StructField("postal_code", StringType(), False),
         StructField("country", StringType(), False),
         StructField("is_primary", BooleanType(), False),
@@ -68,13 +68,66 @@ def normalize_customer_address(customer_address_cdc_record: DataFrame) -> DataFr
         F.col("ingested_at").alias("ingested_at"),
     )
 
+def apply_customer_address_dq(
+    customer_address_data: DataFrame,
+) -> DataFrame:
+    """Apply row-level Customer address data-quality rules.
+
+    Args:
+        customer_address_data: Normalized non-tombstone Customer address CDC records.
+
+    Returns:
+        DataFrame with a dq_errors array containing all failed DQ rules per row.
+    """
+    customer_address_filter_condition = F.array(
+        F.when(F.col("address_id").isNull(),F.lit("MISSING_ADDRESS_ID"),),
+        F.when(F.col("customer_id").isNull(),F.lit("MISSING_CUSTOMER_ID"),),
+
+        F.when(F.col("address_type").isNull()| ~F.col("address_type").isin(["HOME", "SHIPPING", "BILLING"]),
+            F.lit("INVALID_ADDRESS_TYPE"),),
+
+        F.when(F.col("address_line_1").isNull()| (F.trim(F.col("address_line_1")) == ""),
+            F.lit("MISSING_ADDRESS_LINE_1"),),
+        F.when(F.col("city").isNull()| (F.trim(F.col("city")) == ""),F.lit("MISSING_CITY"),),
+
+        F.when(F.col("postal_code").isNull()| (F.trim(F.col("postal_code")) == ""),
+            F.lit("MISSING_POSTAL_CODE"),),
+
+        F.when( F.col("country").isNull()| (F.trim(F.col("country")) == ""),
+            F.lit("MISSING_COUNTRY"),),
+        F.when(F.col("is_primary").isNull(),F.lit("MISSING_IS_PRIMARY"),),
+    )
+
+    return customer_address_data.withColumn("dq_errors",F.array_compact(customer_address_filter_condition),)
+
+
+def split_customer_address_dq(
+    customer_address_error_info: DataFrame,
+) -> tuple[DataFrame, DataFrame]:
+    """Split evaluated Customer address records into valid and quarantine datasets.
+
+    Args:
+        customer_address_error_info: Customer address records containing dq_errors.
+
+    Returns:
+        Tuple containing valid Customer address records and quarantined records.
+    """
+    customer_address_valid_data = (customer_address_error_info.filter(F.size(F.col("dq_errors")) == 0)
+        .drop("dq_errors"))
+
+    customer_address_quarantine_data = (customer_address_error_info.filter(F.size(F.col("dq_errors")) > 0)
+        .withColumn("dq_error_count", F.size(F.col("dq_errors")),)
+        .withColumn("quarantined_at",F.current_timestamp(),
+        ))
+
+    return customer_address_valid_data, customer_address_quarantine_data,
 
 def run_customer_address_silver() -> None:
-    """Run the Customer address Bronze-to-Silver S1 transformation.
+    """Run the Customer address Bronze-to-Silver CDC transformation.
 
-    Initializes Atlas, reads Customer address Bronze data, parses the raw Debezium
-    payload using the explicit Customer address schema, selects the effective CDC
-    record, and normalizes it into the canonical Customer address representation.
+    Initializes Atlas, reads Customer address Bronze data, parses and normalizes the
+    Debezium CDC records, excludes Kafka tombstones from business DQ, applies
+    Customer address data-quality rules, and separates valid and quarantined records.
     """
     settings, spark = initialize_atlas()
     bronze_customer_address_path, _ = get_bronze_paths(settings, "customer",
@@ -92,8 +145,17 @@ def run_customer_address_silver() -> None:
 
     customer_addresses_cdc_record = select_cdc_record(customer_address_parsed_data, "customer_addresses")
 
-    _ = normalize_customer_address(customer_addresses_cdc_record)
-    _.show()
+    customer_address_data = normalize_customer_address(customer_addresses_cdc_record)
+
+    customer_address_non_tombstone_data = customer_address_data.filter(~F.col("is_tombstone"))
+
+    customer_address_error_info = apply_customer_address_dq(customer_address_non_tombstone_data)
+
+    customer_address_valid_data, customer_address_quarantine_data = (split_customer_address_dq
+                                                                     (customer_address_error_info))
+
+    customer_address_valid_data.show(truncate=False)
+    customer_address_quarantine_data.show(truncate=False)
 
 if __name__ == "__main__":
     run_customer_address_silver()

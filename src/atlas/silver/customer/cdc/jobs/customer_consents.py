@@ -18,7 +18,7 @@ def build_customer_consent_schema() -> StructType:
         StructField("consent_id", LongType(), False),
         StructField("customer_id", LongType(), False),
         StructField("consent_type", StringType(), False),
-        StructField("granted", BooleanType(), True),
+        StructField("granted", BooleanType(), False),
         StructField("created_at", StringType(), False),
         StructField("updated_at", StringType(), False),
     ])
@@ -56,12 +56,53 @@ def normalize_customer_consent(customer_consent_cdc_record: DataFrame) -> DataFr
         F.col("ingested_at").alias("ingested_at"),
     )
 
-def run_customer_consent_silver() -> None:
-    """Run the Customer consents Bronze-to-Silver S1 transformation.
+def apply_customer_consent_dq(
+    customer_consent_data: DataFrame,
+) -> DataFrame:
+    """Apply row-level Customer consent data-quality rules.
 
-    Initializes Atlas, reads Customer consents Bronze data, parses the raw Debezium
-    payload using the explicit Customer consents schema, selects the effective CDC
-    record, and normalizes it into the canonical Customer consent representation.
+    Args:
+        customer_consent_data: Normalized non-tombstone Customer consent CDC records.
+
+    Returns:
+        DataFrame with a dq_errors array containing all failed DQ rules per row.
+    """
+    customer_consent_filter_condition = F.array(
+        F.when(F.col("consent_id").isNull(),F.lit("MISSING_CONSENT_ID"),),
+        F.when(F.col("customer_id").isNull(),F.lit("MISSING_CUSTOMER_ID"),),
+        F.when(F.col("consent_type").isNull()| (F.trim(F.col("consent_type")) == ""),F.lit("MISSING_CONSENT_TYPE"),),
+        F.when(F.col("granted").isNull(),F.lit("MISSING_GRANTED"),),)
+
+    return customer_consent_data.withColumn("dq_errors",F.array_compact(customer_consent_filter_condition),)
+
+
+def split_customer_consent_dq(
+    customer_consent_error_info: DataFrame,
+) -> tuple[DataFrame, DataFrame]:
+    """Split evaluated Customer consent records into valid and quarantine datasets.
+
+    Args:
+        customer_consent_error_info: Customer consent records containing dq_errors.
+
+    Returns:
+        Tuple containing valid Customer consent records and quarantined records.
+    """
+    customer_consent_valid_data = (customer_consent_error_info.filter(F.size(F.col("dq_errors")) == 0)
+                                   .drop("dq_errors"))
+
+    customer_consent_quarantine_data = (customer_consent_error_info.filter(F.size(F.col("dq_errors")) > 0)
+        .withColumn("dq_error_count",F.size(F.col("dq_errors")),)
+        .withColumn("quarantined_at",F.current_timestamp(),)
+    )
+
+    return customer_consent_valid_data, customer_consent_quarantine_data
+
+def run_customer_consent_silver() -> None:
+    """Run the Customer consents Bronze-to-Silver CDC transformation.
+
+    Initializes Atlas, reads Customer consents Bronze data, parses and normalizes the
+    Debezium CDC records, excludes Kafka tombstones from business DQ, applies
+    Customer consents data-quality rules, and separates valid and quarantined records.
     """
     settings, spark = initialize_atlas()
     bronze_customer_consent_path, _ = get_bronze_paths(settings, "customer",
@@ -79,8 +120,17 @@ def run_customer_consent_silver() -> None:
 
     customer_consent_cdc_record = select_cdc_record(customer_consent_parsed_data, "customer_consent")
 
-    _ = normalize_customer_consent(customer_consent_cdc_record)
-    _.show()
+    customer_consent_data = normalize_customer_consent(customer_consent_cdc_record)
+
+    customer_consent_non_tombstone_data = customer_consent_data.filter(~F.col("is_tombstone"))
+
+    customer_consent_error_info = apply_customer_consent_dq(customer_consent_non_tombstone_data)
+
+    customer_consent_valid_data, customer_consent_quarantine_data = (split_customer_consent_dq
+                                                                     (customer_consent_error_info))
+
+    customer_consent_valid_data.show()
+    customer_consent_quarantine_data.show()
 
 if __name__ == "__main__":
     run_customer_consent_silver()
