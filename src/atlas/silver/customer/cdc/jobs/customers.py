@@ -29,7 +29,7 @@ def build_customer_schema() -> StructType:
     return customer_record_schema
 
 
-def normalize_customer(customer_after_before: DataFrame) -> DataFrame:
+def normalize_customer(customer_cdc_record: DataFrame) -> DataFrame:
     """Normalize a parsed Customer CDC record into the canonical Customer shape.
 
     Flattens the selected Customer struct, converts source-specific date and
@@ -37,13 +37,13 @@ def normalize_customer(customer_after_before: DataFrame) -> DataFrame:
     ingestion metadata required by downstream Silver processing.
 
     Args:
-        customer_after_before: DataFrame containing the effective Customer CDC
+        customer_cdc_record: DataFrame containing the effective Customer CDC
             record selected from the Debezium before or after struct.
 
     Returns:
         DataFrame containing normalized Customer fields and CDC metadata.
     """
-    return customer_after_before.select(
+    return customer_cdc_record.select(
         F.col("customer.customer_id").alias("customer_id"),
         F.col("customer.first_name").alias("first_name"),
         F.col("customer.last_name").alias("last_name"),
@@ -68,13 +68,53 @@ def normalize_customer(customer_after_before: DataFrame) -> DataFrame:
         F.col("ingested_at").alias("ingested_at"),
     )
 
+def apply_customer_dq(customer_data: DataFrame) -> DataFrame:
+    """Apply row-level Customer data-quality rules.
+
+    Args:
+        customer_data: Normalized non-tombstone Customer CDC records.
+
+    Returns:
+        DataFrame with a dq_errors array containing all failed DQ rules per row.
+    """
+    customer_filter_condition = (
+        F.array(
+            F.when(F.col("customer_id").isNull(), F.lit("MISSING_CUSTOMER_ID")),
+            F.when((F.col("first_name").isNull() | (F.trim(F.col("first_name")) == "")), F.lit("MISSING_FIRST_NAME")),
+            F.when((F.col("last_name").isNull() | (F.trim(F.col("last_name")) == "")), F.lit("MISSING_LAST_NAME")),
+            F.when((F.col("email").isNull() & F.col("phone_number").isNull()), F.lit("MISSING_CONTACT_INFO")),
+            F.when(F.col("date_of_birth") > F.current_date(), F.lit("FUTURE_DATE_OF_BIRTH")),
+            F.when(~F.col("status").isin(["ACTIVE", "INACTIVE", "SUSPENDED"]), F.lit("INVALID_STATUS")),
+            F.when(~F.col("segment").isin(["STANDARD", "GOLD", "PREMIUM"]), F.lit("INVALID_SEGMENT"))
+        ))
+
+    return customer_data.withColumn("dq_errors", F.array_compact(customer_filter_condition))
+
+def split_customer_dq(customer_contain_error_info: DataFrame,) -> tuple[DataFrame, DataFrame]:
+    """Split evaluated Customer records into valid and quarantine datasets.
+
+    Args:
+        customer_contain_error_info: Customer records containing the dq_errors array.
+
+    Returns:
+        Tuple containing valid Customer records and quarantined Customer records.
+    """
+    customer_valid_data = customer_contain_error_info.filter(F.size(F.col("dq_errors")) == 0)
+    customer_valid_data = customer_valid_data.drop("dq_errors")
+
+    customer_quarantine_data = customer_contain_error_info.filter(F.size(F.col("dq_errors")) > 0)
+
+    customer_quarantine_data = (customer_quarantine_data.withColumn("dq_error_count", F.size(F.col("dq_errors")))
+                                .withColumn("quarantined_at", F.current_timestamp()))
+
+    return customer_valid_data, customer_quarantine_data
 
 def run_customer_silver() -> None:
-    """Run the Customer Bronze-to-Silver S1 transformation.
+    """Run the Customer Bronze-to-Silver CDC transformation.
 
-    Initializes Atlas, reads Customer Bronze data, parses the raw Debezium
-    payload using the explicit Customer schema, selects the effective CDC
-    record, and normalizes it into the canonical Customer representation.
+    Initializes Atlas, reads Customer Bronze data, parses and normalizes the
+    Debezium CDC records, excludes Kafka tombstones from business DQ, applies
+    Customer data-quality rules, and separates valid and quarantined records.
     """
     settings, spark = initialize_atlas()
     bronze_customer_path, _ = get_bronze_paths(settings, "customer", "customers")
@@ -89,9 +129,16 @@ def run_customer_silver() -> None:
                                                            F.from_json(F.col("raw_value"), customer_debezium_schema))
 
 
-    customer_after_before = select_cdc_record( customer_parsed_data, "customer")
+    customer_cdc_record = select_cdc_record(customer_parsed_data, "customer")
 
-    _ = normalize_customer(customer_after_before)
+    customer_data = normalize_customer(customer_cdc_record)
+
+    customer_non_tombstone_data = customer_data.filter(~F.col("is_tombstone"))
+    customer_contain_error_info = apply_customer_dq(customer_non_tombstone_data)
+
+    customer_valid_data, customer_quarantine_data = split_customer_dq(customer_contain_error_info)
+    customer_valid_data.show()
+    customer_quarantine_data.show()
 
 if __name__ == "__main__":
     run_customer_silver()
