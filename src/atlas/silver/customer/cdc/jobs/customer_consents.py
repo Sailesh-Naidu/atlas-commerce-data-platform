@@ -2,9 +2,15 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType
 
-from atlas.common.paths.get_cdc_paths import get_bronze_paths
+from atlas.common.paths.get_cdc_paths import get_bronze_paths, get_silver_paths
 from atlas.common.spark.bootstrap_initialization import initialize_atlas
-from atlas.silver.customer.cdc.jobs.customer_cdc_common import build_debezium_schema, select_cdc_record
+from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
+    build_debezium_schema,
+    classify_cdc_against_history,
+    merge_cdc_events,
+    select_cdc_record,
+    split_cdc_events,
+)
 
 
 def build_customer_consent_schema() -> StructType:
@@ -109,13 +115,17 @@ def run_customer_consent_silver() -> None:
     bronze_customer_consent_path, _ = get_bronze_paths(settings, "customer",
                                                        "customer_consents")
 
-    customer_bronze_data = spark.read.format("parquet").load(bronze_customer_consent_path)
+    silver_consent_history_path = get_silver_paths(settings, "customer", "customer_consents", "cdc_history")
+    silver_quarantine_data_path = get_silver_paths(settings, "customer", "customer_consents", "quarantine")
+    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_consents", "rejected")
+
+    customer_consent_bronze_data = spark.read.format("parquet").load(bronze_customer_consent_path)
 
     customer_consent_record_schema = build_customer_consent_schema()
 
     customer_debezium_schema = build_debezium_schema(customer_consent_record_schema)
 
-    customer_consent_parsed_data = customer_bronze_data.withColumn("debezium",
+    customer_consent_parsed_data = customer_consent_bronze_data.withColumn("debezium",
                                                            F.from_json(F.col("raw_value"), customer_debezium_schema))
 
 
@@ -130,8 +140,32 @@ def run_customer_consent_silver() -> None:
     customer_consent_valid_data, customer_consent_quarantine_data = (split_customer_consent_dq
                                                                      (customer_consent_error_info))
 
-    customer_consent_valid_data.show()
-    customer_consent_quarantine_data.show()
+    consent_incoming_orderable_data, consent_incoming_ambiguous_events = split_cdc_events(customer_consent_valid_data,
+                                                                                            "consent_id")
+
+    consent_cdc_accepted_events, consent_cdc_rejected_events = classify_cdc_against_history(spark,
+                                                                                              silver_consent_history_path,
+                                                                                              "consent_id",
+                                                                                              consent_incoming_orderable_data,
+                                                                                              consent_incoming_ambiguous_events)
+
+    # DQ quarantine
+    merge_cdc_events(spark, customer_consent_quarantine_data, silver_quarantine_data_path, )
+
+    # Accepted CDC history
+    merge_cdc_events(spark, consent_cdc_accepted_events, silver_consent_history_path, )
+
+    # Persist CDC ordering rejections
+    if consent_cdc_rejected_events is not None:
+        merge_cdc_events(spark, consent_cdc_rejected_events, silver_rejected_data_path, )
+
+    test_silver_history_data = spark.read.format("delta").load(silver_consent_history_path)
+    test_silver_quarantine_data = spark.read.format("delta").load(silver_quarantine_data_path)
+    test_silver_rejected_data = spark.read.format("delta").load(silver_rejected_data_path)
+    test_silver_history_data.show()
+    test_silver_quarantine_data.show()
+    test_silver_rejected_data.show()
+
 
 if __name__ == "__main__":
     run_customer_consent_silver()

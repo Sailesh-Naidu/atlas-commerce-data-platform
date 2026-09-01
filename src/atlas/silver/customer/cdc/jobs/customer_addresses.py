@@ -2,9 +2,15 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType
 
-from atlas.common.paths.get_cdc_paths import get_bronze_paths
+from atlas.common.paths.get_cdc_paths import get_bronze_paths, get_silver_paths
 from atlas.common.spark.bootstrap_initialization import initialize_atlas
-from atlas.silver.customer.cdc.jobs.customer_cdc_common import build_debezium_schema, select_cdc_record
+from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
+    build_debezium_schema,
+    classify_cdc_against_history,
+    merge_cdc_events,
+    select_cdc_record,
+    split_cdc_events,
+)
 
 
 def build_customer_address_schema() -> StructType:
@@ -134,6 +140,10 @@ def run_customer_address_silver() -> None:
     bronze_customer_address_path, _ = get_bronze_paths(settings, "customer",
                                                        "customer_addresses")
 
+    silver_address_history_path = get_silver_paths(settings, "customer", "customer_addresses", "cdc_history")
+    silver_quarantine_data_path = get_silver_paths(settings, "customer", "customer_addresses", "quarantine")
+    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_addresses", "rejected")
+
     customer_address_bronze_data = spark.read.format("parquet").load(bronze_customer_address_path)
 
     customer_address_record_schema = build_customer_address_schema()
@@ -155,8 +165,32 @@ def run_customer_address_silver() -> None:
     customer_address_valid_data, customer_address_quarantine_data = (split_customer_address_dq
                                                                      (customer_address_error_info))
 
-    customer_address_valid_data.show(truncate=False)
-    customer_address_quarantine_data.show(truncate=False)
+
+    address_incoming_orderable_data, address_incoming_ambiguous_events = (split_cdc_events(customer_address_valid_data,
+                                                                                            "address_id"))
+
+    address_cdc_accepted_events, address_cdc_rejected_events = classify_cdc_against_history(spark,
+                                                                                            silver_address_history_path,
+                                                                                             "address_id",
+                                                                                              address_incoming_orderable_data,
+                                                                                             address_incoming_ambiguous_events)
+
+    # DQ quarantine
+    merge_cdc_events(spark,customer_address_quarantine_data,silver_quarantine_data_path,)
+
+    # Accepted CDC history
+    merge_cdc_events(spark,address_cdc_accepted_events,silver_address_history_path,)
+
+    # Persist CDC ordering rejections
+    if address_cdc_rejected_events is not None:
+        merge_cdc_events(spark,address_cdc_rejected_events,silver_rejected_data_path,)
+
+    test_silver_history_data = spark.read.format("delta").load(silver_address_history_path)
+    test_silver_quarantine_data = spark.read.format("delta").load(silver_quarantine_data_path)
+    test_silver_rejected_data = spark.read.format("delta").load(silver_rejected_data_path)
+    test_silver_history_data.show()
+    test_silver_quarantine_data.show()
+    test_silver_rejected_data.show()
 
 if __name__ == "__main__":
     run_customer_address_silver()

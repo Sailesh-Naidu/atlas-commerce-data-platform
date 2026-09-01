@@ -18,3 +18,21 @@ def get_bronze_paths(settings: AtlasSettings, domain: str, sub_domain: str)  -> 
     paths = get_paths(settings)
     return (paths.bronze_path(f"{domain}/cdc/{sub_domain}/job"),
             paths.checkpoint_path(f"{domain}/cdc/{sub_domain}/job"))
+
+def get_silver_paths(settings: AtlasSettings, domain: str, sub_domain: str, event_type:str)  -> str:
+    """Build storage paths for the  bronze job.
+    Args:
+        settings: Validated Atlas application settings.
+        domain: Validated Atlas domain name.
+        sub_domain: Name of entity folder to write data
+        event_type: Name of event type
+
+    Returns:
+        Tuple containing the customer bronze data path and checkpoint path.
+
+
+
+    """
+    paths = get_paths(settings)
+    return paths.silver_path(f"{domain}/cdc/{sub_domain}/{event_type}/job")
+
