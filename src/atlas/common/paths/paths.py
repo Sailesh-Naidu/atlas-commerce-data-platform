@@ -33,9 +33,9 @@ class AtlasPaths:
         """Return the lakehouse path for the specified gold domain."""
         return self._lakehouse_path("gold", domain)
 
-    def checkpoint_path(self, name: str) -> str:
+    def checkpoint_path(self, layer: str, name: str) -> str:
         """Return the checkpoint path for the specified domain."""
-        return self._join_path(self._checkpoint_root, name)
+        return self._join_path(self._checkpoint_root, layer, name)
 
     def quarantine_path(self, name: str) -> str:
         """Return the quarantine path for the specified domain."""

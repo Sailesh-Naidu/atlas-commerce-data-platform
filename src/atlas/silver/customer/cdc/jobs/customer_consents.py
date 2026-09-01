@@ -2,7 +2,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType
 
-from atlas.common.paths.get_cdc_paths import get_bronze_paths, get_silver_paths
+from atlas.common.paths.get_cdc_paths import get_bronze_paths, get_silver_checkpoint_path, get_silver_paths
 from atlas.common.spark.bootstrap_initialization import initialize_atlas
 from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
     build_debezium_schema,
@@ -104,30 +104,15 @@ def split_customer_consent_dq(
 
     return customer_consent_valid_data, customer_consent_quarantine_data
 
-def run_customer_consent_silver() -> None:
-    """Run the Customer consents Bronze-to-Silver CDC transformation.
+def process_consents_microbatch(spark,consent_bronze_data: DataFrame, batch_id: int,
+                                customer_debezium_schema: StructType, silver_consent_history_path: str,
+                                silver_quarantine_data_path: str, silver_rejected_data_path: str)-> None:
 
-    Initializes Atlas, reads Customer consents Bronze data, parses and normalizes the
-    Debezium CDC records, excludes Kafka tombstones from business DQ, applies
-    Customer consents data-quality rules, and separates valid and quarantined records.
-    """
-    settings, spark = initialize_atlas()
-    bronze_customer_consent_path, _ = get_bronze_paths(settings, "customer",
-                                                       "customer_consents")
+    print(f"Processing Customer Silver micro-batch: {batch_id}")
 
-    silver_consent_history_path = get_silver_paths(settings, "customer", "customer_consents", "cdc_history")
-    silver_quarantine_data_path = get_silver_paths(settings, "customer", "customer_consents", "quarantine")
-    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_consents", "rejected")
-
-    customer_consent_bronze_data = spark.read.format("parquet").load(bronze_customer_consent_path)
-
-    customer_consent_record_schema = build_customer_consent_schema()
-
-    customer_debezium_schema = build_debezium_schema(customer_consent_record_schema)
-
-    customer_consent_parsed_data = customer_consent_bronze_data.withColumn("debezium",
-                                                           F.from_json(F.col("raw_value"), customer_debezium_schema))
-
+    customer_consent_parsed_data = consent_bronze_data.withColumn("debezium",
+                                                                           F.from_json(F.col("raw_value"),
+                                                                                       customer_debezium_schema))
 
     customer_consent_cdc_record = select_cdc_record(customer_consent_parsed_data, "customer_consent")
 
@@ -141,13 +126,13 @@ def run_customer_consent_silver() -> None:
                                                                      (customer_consent_error_info))
 
     consent_incoming_orderable_data, consent_incoming_ambiguous_events = split_cdc_events(customer_consent_valid_data,
-                                                                                            "consent_id")
+                                                                                          "consent_id")
 
     consent_cdc_accepted_events, consent_cdc_rejected_events = classify_cdc_against_history(spark,
-                                                                                              silver_consent_history_path,
-                                                                                              "consent_id",
-                                                                                              consent_incoming_orderable_data,
-                                                                                              consent_incoming_ambiguous_events)
+                                                                                            silver_consent_history_path,
+                                                                                            "consent_id",
+                                                                                            consent_incoming_orderable_data,
+                                                                                            consent_incoming_ambiguous_events)
 
     # DQ quarantine
     merge_cdc_events(spark, customer_consent_quarantine_data, silver_quarantine_data_path, )
@@ -159,13 +144,45 @@ def run_customer_consent_silver() -> None:
     if consent_cdc_rejected_events is not None:
         merge_cdc_events(spark, consent_cdc_rejected_events, silver_rejected_data_path, )
 
-    test_silver_history_data = spark.read.format("delta").load(silver_consent_history_path)
-    test_silver_quarantine_data = spark.read.format("delta").load(silver_quarantine_data_path)
-    test_silver_rejected_data = spark.read.format("delta").load(silver_rejected_data_path)
-    test_silver_history_data.show()
-    test_silver_quarantine_data.show()
-    test_silver_rejected_data.show()
+def process_batch(consent_microbatch: DataFrame, batch_id: int) -> None:
+    settings, spark = initialize_atlas()
+    silver_consent_history_path = get_silver_paths(settings, "customer", "customer_consents", "cdc_history")
+    silver_quarantine_data_path = get_silver_paths(settings, "customer", "customer_consents", "quarantine")
+    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_consents", "rejected")
 
+    consent_record_schema = build_customer_consent_schema()
+    consent_debezium_schema = build_debezium_schema(consent_record_schema)
 
+    process_consents_microbatch(spark, consent_microbatch, batch_id, consent_debezium_schema,
+                                silver_consent_history_path, silver_quarantine_data_path, silver_rejected_data_path)
+
+def run_customer_consent_silver() -> None:
+    """Run the Customer consents Bronze-to-Silver CDC transformation.
+
+    Initializes Atlas, reads Customer consents Bronze data, parses and normalizes the
+    Debezium CDC records, excludes Kafka tombstones from business DQ, applies
+    Customer consents data-quality rules, and separates valid and quarantined records.
+    """
+    settings, spark = initialize_atlas()
+    bronze_consent_path, _ = get_bronze_paths(settings, "customer",
+                                                       "customer_consents")
+
+    silver_consents_checkpoint_path = get_silver_checkpoint_path(settings,"customer", "customer_consents")
+    consent_bronze_schema = spark.read.format("parquet").load(bronze_consent_path).schema
+
+    consent_bronze_data = spark.readStream.format("parquet").schema(consent_bronze_schema).load(bronze_consent_path)
+
+    consent_silver_query = (consent_bronze_data.writeStream
+                             .foreachBatch(process_batch)
+                             .option("checkpointLocation", silver_consents_checkpoint_path, )
+                             .trigger(availableNow=True).start())
+
+    consent_silver_query.awaitTermination()
+    silver_customer_history_path = get_silver_paths(settings, "customer", "customer_consents", "cdc_history")
+    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_consents", "rejected")
+    test_history = spark.read.format("delta").load(silver_customer_history_path)
+    test_rejected = spark.read.format("delta").load(silver_rejected_data_path)
+    test_history.show()
+    test_rejected.show()
 if __name__ == "__main__":
     run_customer_consent_silver()

@@ -2,7 +2,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import LongType, StringType, StructField, StructType
 
-from atlas.common.paths.get_cdc_paths import get_bronze_paths, get_silver_paths
+from atlas.common.paths.get_cdc_paths import get_bronze_paths, get_silver_checkpoint_path, get_silver_paths
 from atlas.common.spark.bootstrap_initialization import initialize_atlas
 from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
     build_debezium_schema,
@@ -117,30 +117,15 @@ def split_customer_dq(customer_contain_error_info: DataFrame,) -> tuple[DataFram
     return customer_valid_data, customer_quarantine_data
 
 
+def process_customer_microbatch(spark,customer_bronze_data: DataFrame, batch_id: int,
+                                customer_debezium_schema: StructType, silver_customer_history_path: str,
+                                silver_quarantine_data_path: str, silver_rejected_data_path: str)-> None:
 
 
-def run_customer_silver() -> None:
-    """Run the Customer Bronze-to-Silver CDC transformation.
-
-    Initializes Atlas, reads Customer Bronze data, parses and normalizes the
-    Debezium CDC records, excludes Kafka tombstones from business DQ, applies
-    Customer data-quality rules, and separates valid and quarantined records.
-    """
-    settings, spark = initialize_atlas()
-    bronze_customer_path, _ = get_bronze_paths(settings, "customer", "customers")
-    silver_customer_history_path = get_silver_paths(settings,"customer", "customers","cdc_history")
-    silver_quarantine_data_path = get_silver_paths(settings,"customer", "customers","quarantine")
-    silver_rejected_data_path = get_silver_paths(settings,"customer", "customers","rejected")
-
-    customer_bronze_data = spark.read.format("parquet").load(bronze_customer_path)
-
-    customer_record_schema = build_customer_schema()
-
-    customer_debezium_schema = build_debezium_schema(customer_record_schema)
+    print(f"Processing Customer Silver micro-batch: {batch_id}")
 
     customer_parsed_data = customer_bronze_data.withColumn("debezium",
                                                            F.from_json(F.col("raw_value"), customer_debezium_schema))
-
 
     customer_cdc_record = select_cdc_record(customer_parsed_data, "customer")
 
@@ -161,21 +146,53 @@ def run_customer_silver() -> None:
                                                                                               customer_incoming_ambiguous_events)
 
     # DQ quarantine
-    merge_cdc_events(spark,customer_quarantine_data,silver_quarantine_data_path,)
+    merge_cdc_events(spark, customer_quarantine_data, silver_quarantine_data_path, )
 
     # Accepted CDC history
-    merge_cdc_events(spark,customer_cdc_accepted_events,silver_customer_history_path,)
+    merge_cdc_events(spark, customer_cdc_accepted_events, silver_customer_history_path, )
 
     # Persist CDC ordering rejections
     if customer_cdc_rejected_events is not None:
-        merge_cdc_events(spark,customer_cdc_rejected_events,silver_rejected_data_path,)
+        merge_cdc_events(spark, customer_cdc_rejected_events, silver_rejected_data_path, )
 
-    test_silver_history_data = spark.read.format("delta").load(silver_customer_history_path)
-    test_silver_quarantine_data = spark.read.format("delta").load(silver_quarantine_data_path)
-    test_silver_rejected_data = spark.read.format("delta").load(silver_rejected_data_path)
-    test_silver_history_data.show()
-    test_silver_quarantine_data.show()
-    test_silver_rejected_data.show()
+def process_batch(customer_microbatch: DataFrame, batch_id: int) -> None:
+    settings, spark = initialize_atlas()
+    silver_customer_history_path = get_silver_paths(settings, "customer", "customers", "cdc_history")
+    silver_quarantine_data_path = get_silver_paths(settings, "customer", "customers", "quarantine")
+    silver_rejected_data_path = get_silver_paths(settings, "customer", "customers", "rejected")
+    customer_record_schema = build_customer_schema()
+    customer_debezium_schema = build_debezium_schema(customer_record_schema)
+
+    process_customer_microbatch(spark, customer_microbatch,batch_id,customer_debezium_schema,
+                                silver_customer_history_path,silver_quarantine_data_path,silver_rejected_data_path)
+
+def run_customer_silver() -> None:
+    """Run the Customer Bronze-to-Silver CDC transformation.
+
+    Initializes Atlas, reads Customer Bronze data, parses and normalizes the
+    Debezium CDC records, excludes Kafka tombstones from business DQ, applies
+    Customer data-quality rules, and separates valid and quarantined records.
+    """
+    settings, spark = initialize_atlas()
+    bronze_customer_path, _ = get_bronze_paths(settings, "customer", "customers")
+    silver_customer_checkpoint_path = get_silver_checkpoint_path(settings,"customer", "customers")
+    customer_bronze_schema = spark.read.format("parquet").load(bronze_customer_path).schema
+
+    customer_bronze_data = spark.readStream.format("parquet").schema(customer_bronze_schema).load(bronze_customer_path)
+
+
+    customer_silver_query = (customer_bronze_data.writeStream
+                             .foreachBatch(process_batch)
+                             .option("checkpointLocation",silver_customer_checkpoint_path,)
+                             .trigger(availableNow=True).start())
+
+    customer_silver_query.awaitTermination()
+    silver_customer_history_path = get_silver_paths(settings, "customer", "customers", "cdc_history")
+    silver_rejected_data_path = get_silver_paths(settings, "customer", "customers", "rejected")
+    test_history = spark.read.format("delta").load(silver_customer_history_path)
+    test_rejected = spark.read.format("delta").load(silver_rejected_data_path)
+    test_history.show()
+    test_rejected.show()
 
 if __name__ == "__main__":
     run_customer_silver()

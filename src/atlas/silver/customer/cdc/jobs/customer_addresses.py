@@ -2,7 +2,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType
 
-from atlas.common.paths.get_cdc_paths import get_bronze_paths, get_silver_paths
+from atlas.common.paths.get_cdc_paths import get_bronze_paths, get_silver_checkpoint_path, get_silver_paths
 from atlas.common.spark.bootstrap_initialization import initialize_atlas
 from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
     build_debezium_schema,
@@ -129,30 +129,34 @@ def split_customer_address_dq(
 
     return customer_address_valid_data, customer_address_quarantine_data,
 
-def run_customer_address_silver() -> None:
-    """Run the Customer address Bronze-to-Silver CDC transformation.
+def process_customer_microbatch(spark,address_bronze_data: DataFrame, batch_id: int,
+                                customer_debezium_schema: StructType, silver_address_history_path: str,
+                                silver_quarantine_data_path: str, silver_rejected_data_path: str)-> None:
+    """Process one Customer address Bronze micro-batch through Silver CDC stages.
+    Parses and normalizes Debezium address events, removes Kafka tombstones from
+    business DQ processing, applies address data-quality rules, classifies valid
+    CDC events against accepted history, and idempotently persists quarantine,
+    accepted-history, and CDC-rejection datasets.
 
-    Initializes Atlas, reads Customer address Bronze data, parses and normalizes the
-    Debezium CDC records, excludes Kafka tombstones from business DQ, applies
-    Customer address data-quality rules, and separates valid and quarantined records.
+    Args:
+        spark: Active Spark session used for Delta history reads and writes.
+        address_bronze_data: Bronze records supplied for the current micro-batch.
+        batch_id: Structured Streaming identifier for the current micro-batch.
+        customer_debezium_schema: Debezium envelope schema containing the Customer
+            address record schema.
+        silver_address_history_path: Delta path for accepted Customer address CDC
+            history.
+        silver_quarantine_data_path: Delta path for Customer address DQ quarantine
+            records.
+        silver_rejected_data_path: Delta path for rejected Customer address CDC
+            ordering events.
     """
-    settings, spark = initialize_atlas()
-    bronze_customer_address_path, _ = get_bronze_paths(settings, "customer",
-                                                       "customer_addresses")
 
-    silver_address_history_path = get_silver_paths(settings, "customer", "customer_addresses", "cdc_history")
-    silver_quarantine_data_path = get_silver_paths(settings, "customer", "customer_addresses", "quarantine")
-    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_addresses", "rejected")
+    print(f"Processing Customer Silver micro-batch: {batch_id}")
 
-    customer_address_bronze_data = spark.read.format("parquet").load(bronze_customer_address_path)
-
-    customer_address_record_schema = build_customer_address_schema()
-
-    customer_debezium_schema = build_debezium_schema(customer_address_record_schema)
-
-    customer_address_parsed_data = customer_address_bronze_data.withColumn("debezium",
-                                                           F.from_json(F.col("raw_value"), customer_debezium_schema))
-
+    customer_address_parsed_data = address_bronze_data.withColumn("debezium",
+                                                                           F.from_json(F.col("raw_value"),
+                                                                                       customer_debezium_schema))
 
     customer_addresses_cdc_record = select_cdc_record(customer_address_parsed_data, "customer_addresses")
 
@@ -165,32 +169,76 @@ def run_customer_address_silver() -> None:
     customer_address_valid_data, customer_address_quarantine_data = (split_customer_address_dq
                                                                      (customer_address_error_info))
 
-
     address_incoming_orderable_data, address_incoming_ambiguous_events = (split_cdc_events(customer_address_valid_data,
-                                                                                            "address_id"))
+                                                                                           "address_id"))
 
     address_cdc_accepted_events, address_cdc_rejected_events = classify_cdc_against_history(spark,
                                                                                             silver_address_history_path,
-                                                                                             "address_id",
-                                                                                              address_incoming_orderable_data,
-                                                                                             address_incoming_ambiguous_events)
+                                                                                            "address_id",
+                                                                                            address_incoming_orderable_data,
+                                                                                            address_incoming_ambiguous_events)
 
     # DQ quarantine
-    merge_cdc_events(spark,customer_address_quarantine_data,silver_quarantine_data_path,)
+    merge_cdc_events(spark, customer_address_quarantine_data, silver_quarantine_data_path, )
 
     # Accepted CDC history
-    merge_cdc_events(spark,address_cdc_accepted_events,silver_address_history_path,)
+    merge_cdc_events(spark, address_cdc_accepted_events, silver_address_history_path, )
 
     # Persist CDC ordering rejections
     if address_cdc_rejected_events is not None:
-        merge_cdc_events(spark,address_cdc_rejected_events,silver_rejected_data_path,)
+        merge_cdc_events(spark, address_cdc_rejected_events, silver_rejected_data_path, )
 
-    test_silver_history_data = spark.read.format("delta").load(silver_address_history_path)
-    test_silver_quarantine_data = spark.read.format("delta").load(silver_quarantine_data_path)
-    test_silver_rejected_data = spark.read.format("delta").load(silver_rejected_data_path)
-    test_silver_history_data.show()
-    test_silver_quarantine_data.show()
-    test_silver_rejected_data.show()
+
+def process_batch(address_microbatch: DataFrame, batch_id: int)->None:
+    """Process a Structured Streaming Customer address micro-batch.
+
+    Resolves Atlas dependencies and Customer address Silver paths, builds the
+    Debezium schema, and delegates the micro-batch to the Customer address Silver
+    processing pipeline.
+
+    Args:
+        address_microbatch: Bronze Customer address records in the current
+            Structured Streaming micro-batch.
+        batch_id: Structured Streaming identifier for the current micro-batch.
+    """
+    settings, spark = initialize_atlas()
+    silver_address_history_path = get_silver_paths(settings, "customer", "customer_addresses", "cdc_history")
+    silver_quarantine_data_path = get_silver_paths(settings, "customer", "customer_addresses", "quarantine")
+    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_addresses", "rejected")
+    customer_address_record_schema = build_customer_address_schema()
+    address_debezium_schema = build_debezium_schema(customer_address_record_schema)
+
+    process_customer_microbatch(spark, address_microbatch, batch_id, address_debezium_schema,
+                                silver_address_history_path, silver_quarantine_data_path, silver_rejected_data_path)
+
+def run_customer_address_silver() -> None:
+    """Run the Customer address Bronze-to-Silver CDC transformation.
+
+    Initializes Atlas, reads Customer address Bronze data, parses and normalizes the
+    Debezium CDC records, excludes Kafka tombstones from business DQ, applies
+    Customer address data-quality rules, and separates valid and quarantined records.
+    """
+    settings, spark = initialize_atlas()
+    bronze_address_path, _ = get_bronze_paths(settings, "customer",
+                                                       "customer_addresses")
+    silver_address_checkpoint_path = get_silver_checkpoint_path(settings,"customer", "customer_addresses")
+    customer_bronze_schema = spark.read.format("parquet").load(bronze_address_path).schema
+    address_bronze_data = spark.readStream.format("parquet").schema(customer_bronze_schema).load(bronze_address_path)
+
+    address_silver_query = (address_bronze_data.writeStream
+                             .foreachBatch(process_batch)
+                             .option("checkpointLocation", silver_address_checkpoint_path, )
+                             .trigger(availableNow=True).start())
+
+    address_silver_query.awaitTermination()
+
+    silver_customer_history_path = get_silver_paths(settings, "customer", "customer_addresses", "cdc_history")
+    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_addresses", "rejected")
+    test_history = spark.read.format("delta").load(silver_customer_history_path)
+    test_rejected = spark.read.format("delta").load(silver_rejected_data_path)
+    test_history.show()
+    test_rejected.show()
+
 
 if __name__ == "__main__":
     run_customer_address_silver()

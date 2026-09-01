@@ -68,6 +68,21 @@ def select_cdc_record(parsed_data: DataFrame, entity_name: str) -> DataFrame:
                                   )
 
 def split_cdc_events(entity_valid_data: DataFrame, entity_key: str) -> tuple[DataFrame, DataFrame]:
+    """Split valid CDC events into orderable and ambiguous event sets.
+
+        Deduplicates events by Kafka record identity and detects same-run ordering
+        ambiguity when the same entity and source LSN appear across multiple Kafka
+        partitions.
+
+        Args:
+            entity_valid_data: Valid normalized CDC events containing Kafka metadata
+                and source ordering information.
+            entity_key: Business key column used to identify the CDC entity.
+
+        Returns:
+            Tuple containing orderable CDC events and ambiguous CDC events. Ambiguous
+            events include rejection metadata describing the ordering conflict.
+        """
     entity_deduplicated_data = entity_valid_data.drop_duplicates(["kafka_topic", "kafka_partition", "kafka_offset"])
 
     entity_incoming_ambiguous_keys = (entity_deduplicated_data.groupBy([entity_key, 'source_lsn'])
@@ -96,6 +111,30 @@ def split_cdc_events(entity_valid_data: DataFrame, entity_key: str) -> tuple[Dat
 def classify_cdc_against_history(spark: SparkSession, silver_entity_history_path:str, entity_key: str,
                                  entity_incoming_orderable_data: DataFrame,
                                  entity_incoming_ambiguous_events: DataFrame) -> tuple[DataFrame, DataFrame]:
+    """Classify incoming CDC events against previously accepted event history.
+
+        Compares each orderable incoming event with the latest accepted event for the
+        same entity using source LSN and Kafka metadata. Events that can advance the
+        entity state are accepted, while stale or ambiguously ordered events are
+        returned as rejected events. Same-run ambiguous events are also included in
+        the rejected result.
+
+        Args:
+            spark: Active Spark session used to inspect the Delta history table.
+            silver_entity_history_path: Delta path containing previously accepted CDC
+                event history for the entity.
+            entity_key: Business key column used to identify the CDC entity.
+            entity_incoming_orderable_data: Incoming CDC events that passed same-run
+                ambiguity detection and can be ordered against persisted history.
+            entity_incoming_ambiguous_events: Incoming CDC events rejected because
+                their ordering is ambiguous within the current run.
+
+        Returns:
+            Tuple containing accepted CDC events and rejected CDC events. Accepted
+            events are NEW or NEWER relative to persisted history. Rejected events
+            contain stale or ambiguous events together with ordering metadata when
+            persisted history is available.
+        """
 
     entity_history_exists = DeltaTable.isDeltaTable(spark,silver_entity_history_path)
     if entity_history_exists:
@@ -152,7 +191,15 @@ def classify_cdc_against_history(spark: SparkSession, silver_entity_history_path
     return entity_cdc_accepted_events, entity_cdc_rejected_events
 
 def merge_cdc_events(spark: SparkSession,data: DataFrame,target_path: str,) -> None:
-    """Persist CDC events idempotently using Kafka record identity."""
+    """Persist CDC events idempotently using Kafka record identity.
+    Args:
+        spark:  Active Spark session used to inspect the Delta history table.
+        data: Data that needs to be persisted.
+        target_path: Target path for the Delta history table.
+
+    Returns:
+        None
+    """
 
     if not DeltaTable.isDeltaTable(spark, target_path):
         data.write.format("delta").save(target_path)
