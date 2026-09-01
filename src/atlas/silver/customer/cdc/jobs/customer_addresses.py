@@ -61,6 +61,7 @@ def normalize_customer_address(customer_address_cdc_record: DataFrame) -> DataFr
         F.timestamp_millis(F.col("debezium.payload.source.ts_ms")).alias("source_timestamp"),
         F.col("debezium.payload.op").alias("cdc_operation"),
         F.col("debezium.payload.source.lsn").alias("source_lsn"),
+        F.col("kafka_topic").alias("kafka_topic"),
         F.col("kafka_partition").alias("kafka_partition"),
         F.col("kafka_offset").alias("kafka_offset"),
         F.col("kafka_timestamp").alias("kafka_timestamp"),
