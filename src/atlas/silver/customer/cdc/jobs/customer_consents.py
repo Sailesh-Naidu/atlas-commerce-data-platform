@@ -1,4 +1,4 @@
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType
 
@@ -7,6 +7,7 @@ from atlas.common.spark.bootstrap_initialization import initialize_atlas
 from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
     build_debezium_schema,
     classify_cdc_against_history,
+    merge_cdc_canonical_events,
     merge_cdc_events,
     select_cdc_record,
     split_cdc_events,
@@ -104,9 +105,29 @@ def split_customer_consent_dq(
 
     return customer_consent_valid_data, customer_consent_quarantine_data
 
-def process_consents_microbatch(spark,consent_bronze_data: DataFrame, batch_id: int,
-                                customer_debezium_schema: StructType, silver_consent_history_path: str,
-                                silver_quarantine_data_path: str, silver_rejected_data_path: str)-> None:
+def process_consents_microbatch(spark: SparkSession,consent_bronze_data: DataFrame, batch_id: int,
+                                customer_debezium_schema: StructType, silver_consents_canonical_data_path: str,
+                                silver_consent_history_path: str,silver_quarantine_data_path: str,
+                                silver_rejected_data_path: str)-> None:
+    """Process one Customer consent Bronze micro-batch into Silver datasets.
+
+    Parses Debezium CDC records, normalizes Customer consent fields, excludes Kafka
+    tombstones, applies data-quality rules, and separates valid and quarantined
+    records. Valid records are evaluated for CDC ordering and idempotency before
+    accepted events are persisted to CDC history and merged into the canonical
+    current-state table. CDC ordering rejections are persisted separately.
+
+    Args:
+        spark: Active Spark session used for Delta reads and writes.
+        consent_bronze_data: Bronze Customer consent records for the current micro-batch.
+        batch_id: Structured Streaming micro-batch identifier.
+        customer_debezium_schema: Schema used to parse the Debezium JSON payload.
+        silver_consents_canonical_data_path: Silver path for canonical current-state
+            Customer consent records.
+        silver_consent_history_path: Silver path for accepted Customer consent CDC history.
+        silver_quarantine_data_path: Silver path for records failing data-quality rules.
+        silver_rejected_data_path: Silver path for records rejected by CDC ordering rules.
+    """
 
     print(f"Processing Customer Silver micro-batch: {batch_id}")
 
@@ -140,12 +161,25 @@ def process_consents_microbatch(spark,consent_bronze_data: DataFrame, batch_id: 
     # Accepted CDC history
     merge_cdc_events(spark, consent_cdc_accepted_events, silver_consent_history_path, )
 
+    merge_cdc_canonical_events(spark, silver_consents_canonical_data_path, consent_cdc_accepted_events, "consent_id")
+
     # Persist CDC ordering rejections
     if consent_cdc_rejected_events is not None:
         merge_cdc_events(spark, consent_cdc_rejected_events, silver_rejected_data_path, )
 
 def process_batch(consent_microbatch: DataFrame, batch_id: int) -> None:
+    """Process a Structured Streaming Customer consent micro-batch.
+
+    Initializes Atlas runtime dependencies, resolves the Customer consent Silver
+    output paths, builds the Debezium parsing schema, and delegates transformation
+    and persistence of the micro-batch to ``process_consents_microbatch``.
+
+    Args:
+        consent_microbatch: Bronze Customer consent records supplied by foreachBatch.
+        batch_id: Structured Streaming micro-batch identifier.
+    """
     settings, spark = initialize_atlas()
+    silver_consents_canonical_data_path = get_silver_paths(settings, "customer", "customer_consents", "canonical")
     silver_consent_history_path = get_silver_paths(settings, "customer", "customer_consents", "cdc_history")
     silver_quarantine_data_path = get_silver_paths(settings, "customer", "customer_consents", "quarantine")
     silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_consents", "rejected")
@@ -154,7 +188,8 @@ def process_batch(consent_microbatch: DataFrame, batch_id: int) -> None:
     consent_debezium_schema = build_debezium_schema(consent_record_schema)
 
     process_consents_microbatch(spark, consent_microbatch, batch_id, consent_debezium_schema,
-                                silver_consent_history_path, silver_quarantine_data_path, silver_rejected_data_path)
+                                silver_consents_canonical_data_path, silver_consent_history_path,
+                                silver_quarantine_data_path, silver_rejected_data_path)
 
 def run_customer_consent_silver() -> None:
     """Run the Customer consents Bronze-to-Silver CDC transformation.
@@ -178,11 +213,5 @@ def run_customer_consent_silver() -> None:
                              .trigger(availableNow=True).start())
 
     consent_silver_query.awaitTermination()
-    silver_customer_history_path = get_silver_paths(settings, "customer", "customer_consents", "cdc_history")
-    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_consents", "rejected")
-    test_history = spark.read.format("delta").load(silver_customer_history_path)
-    test_rejected = spark.read.format("delta").load(silver_rejected_data_path)
-    test_history.show()
-    test_rejected.show()
 if __name__ == "__main__":
     run_customer_consent_silver()

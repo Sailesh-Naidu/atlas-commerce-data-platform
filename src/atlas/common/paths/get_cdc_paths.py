@@ -29,9 +29,6 @@ def get_silver_paths(settings: AtlasSettings, domain: str, sub_domain: str, even
 
     Returns:
         Tuple containing the domains silver data path
-
-
-
     """
     paths = get_paths(settings)
     return paths.silver_path(f"{domain}/cdc/{sub_domain}/{event_type}/job")

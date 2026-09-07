@@ -144,18 +144,40 @@ def classify_cdc_against_history(spark: SparkSession, silver_entity_history_path
 
         entity_cdc_history_data = entity_cdc_history_table.toDF()
 
+        entity_cdc_history_select = entity_cdc_history_data.select(F.col("kafka_partition"),
+                                                                   F.col("kafka_offset"),
+                                                                   F.col("kafka_topic")).alias("t")
+
+        already_accepted_events_condition = (
+                (F.col("s.kafka_partition") == F.col("t.kafka_partition"))
+                & (F.col("s.kafka_offset") == F.col("t.kafka_offset"))
+                & (F.col("s.kafka_topic") == F.col("t.kafka_topic"))
+        )
+
+        entity_already_accepted_events = (
+            entity_incoming_orderable_data.alias("s")
+            .join(entity_cdc_history_select,already_accepted_events_condition,
+                "left_semi",))
+
+        entity_not_already_accepted_events = (
+            entity_incoming_orderable_data.alias("s")
+            .join(entity_cdc_history_select,already_accepted_events_condition,
+                "left_anti",))
+
         # Latest accepted event for each entity
         entity_cdc_latest_window = (Window.partitionBy(entity_key)
                                       .orderBy(F.col("source_lsn").desc(),F.col("kafka_offset").desc()))
 
-        entity_cdc_latest = (entity_cdc_history_data
+        entity_cdc_latest_history = (entity_cdc_history_data
                              .withColumn("row_number",F.row_number().over(entity_cdc_latest_window))
                              .filter(F.col("row_number") == 1).drop("row_number")
         )
 
+
+
         # Compare this run's incoming events against PREVIOUS history
-        entity_cdc_comparison = (entity_incoming_orderable_data.alias("s")
-                                 .join(entity_cdc_latest.alias("t"),
+        entity_cdc_comparison = (entity_not_already_accepted_events.alias("s")
+                                 .join(entity_cdc_latest_history.alias("t"),
                                        F.col(f"s.{entity_key}") == F.col(f"t.{entity_key}"), "left")
         )
 
@@ -170,8 +192,12 @@ def classify_cdc_against_history(spark: SparkSession, silver_entity_history_path
             .otherwise(F.lit("STALE")))
 
         # Only accepted incoming events
-        entity_cdc_accepted_events = (
-            entity_cdc_classified.filter(F.col("cdc_status").isin("NEW", "NEWER")).select("s.*"))
+        entity_cdc_eligible_events = (
+            entity_cdc_classified
+            .filter(F.col("cdc_status").isin("NEW", "NEWER"))
+            .select("s.*")
+            .unionByName(entity_already_accepted_events)
+        )
 
         # Keep these separately for later monitoring/quarantine
         entity_cdc_rejected_events = (entity_cdc_classified
@@ -182,13 +208,12 @@ def classify_cdc_against_history(spark: SparkSession, silver_entity_history_path
                                               F.col("t.kafka_offset").alias("persisted_kafka_offset"))
                                       .withColumn("rejected_at",F.current_timestamp()))
         entity_cdc_rejected_events = entity_cdc_rejected_events.unionByName(entity_incoming_ambiguous_events)
-
     else:
         # FIRST RUN:There is no previous history to compare against.
-        entity_cdc_accepted_events = entity_incoming_orderable_data
+        entity_cdc_eligible_events = entity_incoming_orderable_data
         entity_cdc_rejected_events = entity_incoming_ambiguous_events
 
-    return entity_cdc_accepted_events, entity_cdc_rejected_events
+    return entity_cdc_eligible_events, entity_cdc_rejected_events
 
 def merge_cdc_events(spark: SparkSession,data: DataFrame,target_path: str,) -> None:
     """Persist CDC events idempotently using Kafka record identity.
@@ -215,5 +240,51 @@ def merge_cdc_events(spark: SparkSession,data: DataFrame,target_path: str,) -> N
 
     (target_table.alias("t").merge(data.alias("s"),event_identity_condition)
      .whenNotMatchedInsertAll().execute())
+
+def merge_cdc_canonical_events(spark: SparkSession, silver_entity_canonical_path: str,
+                               entity_cdc_accepted_events: DataFrame, entity_key: str ) -> None:
+    """Materialize accepted CDC events into canonical current state.
+       Selects the latest accepted event for each entity in the incoming
+       micro-batch and applies CDC semantics to the canonical Delta table.
+
+       Args:
+           spark: Active Spark session.
+           silver_entity_canonical_path: Delta path for canonical current state.
+           entity_cdc_accepted_events: CDC events accepted by S3.
+           entity_key: Business key identifying the entity.
+
+       Returns:
+           None.
+       """
+    entity_latest_accepted_window = Window.partitionBy(entity_key).orderBy(F.col("source_lsn").desc(),
+                                                                                F.col("kafka_offset").desc())
+
+    entity_latest_accepted_records = entity_cdc_accepted_events.withColumn("rn", F.row_number().over(
+        entity_latest_accepted_window)).filter(F.col("rn") == 1).drop(F.col("rn"))
+
+    if not DeltaTable.isDeltaTable(spark, silver_entity_canonical_path):
+        entity_initial_current_records = (
+            entity_latest_accepted_records
+            .filter(F.col("cdc_operation") != "d")
+        )
+
+        (
+            entity_initial_current_records.write
+            .format("delta")
+            .save(silver_entity_canonical_path)
+        )
+    else:
+        entity_current_table = DeltaTable.forPath(spark,silver_entity_canonical_path)
+
+        (entity_current_table.alias("t")
+         .merge(entity_latest_accepted_records.alias("s"),
+                F.col(f"t.{entity_key}") == F.col(f"s.{entity_key}"))
+         .whenMatchedUpdateAll(
+            condition="s.cdc_operation in ('c','u','r')")
+         .whenMatchedDelete(
+            condition="s.cdc_operation = 'd'")
+         .whenNotMatchedInsertAll(
+            condition="s.cdc_operation in ('c','u','r')")
+         .execute())
 
 

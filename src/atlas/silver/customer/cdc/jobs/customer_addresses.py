@@ -7,6 +7,7 @@ from atlas.common.spark.bootstrap_initialization import initialize_atlas
 from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
     build_debezium_schema,
     classify_cdc_against_history,
+    merge_cdc_canonical_events,
     merge_cdc_events,
     select_cdc_record,
     split_cdc_events,
@@ -130,7 +131,8 @@ def split_customer_address_dq(
     return customer_address_valid_data, customer_address_quarantine_data,
 
 def process_customer_microbatch(spark,address_bronze_data: DataFrame, batch_id: int,
-                                customer_debezium_schema: StructType, silver_address_history_path: str,
+                                customer_debezium_schema: StructType, silver_address_canonical_data_path: str,
+                                silver_address_history_path: str,
                                 silver_quarantine_data_path: str, silver_rejected_data_path: str)-> None:
     """Process one Customer address Bronze micro-batch through Silver CDC stages.
     Parses and normalizes Debezium address events, removes Kafka tombstones from
@@ -144,6 +146,7 @@ def process_customer_microbatch(spark,address_bronze_data: DataFrame, batch_id: 
         batch_id: Structured Streaming identifier for the current micro-batch.
         customer_debezium_schema: Debezium envelope schema containing the Customer
             address record schema.
+        silver_address_canonical_data_path: Delta path for canonical customer addresses
         silver_address_history_path: Delta path for accepted Customer address CDC
             history.
         silver_quarantine_data_path: Delta path for Customer address DQ quarantine
@@ -184,6 +187,7 @@ def process_customer_microbatch(spark,address_bronze_data: DataFrame, batch_id: 
     # Accepted CDC history
     merge_cdc_events(spark, address_cdc_accepted_events, silver_address_history_path, )
 
+    merge_cdc_canonical_events(spark, silver_address_canonical_data_path, address_cdc_accepted_events, "address_id")
     # Persist CDC ordering rejections
     if address_cdc_rejected_events is not None:
         merge_cdc_events(spark, address_cdc_rejected_events, silver_rejected_data_path, )
@@ -202,6 +206,7 @@ def process_batch(address_microbatch: DataFrame, batch_id: int)->None:
         batch_id: Structured Streaming identifier for the current micro-batch.
     """
     settings, spark = initialize_atlas()
+    silver_address_canonical_data_path = get_silver_paths(settings, "customer", "customer_addresses", "canonical")
     silver_address_history_path = get_silver_paths(settings, "customer", "customer_addresses", "cdc_history")
     silver_quarantine_data_path = get_silver_paths(settings, "customer", "customer_addresses", "quarantine")
     silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_addresses", "rejected")
@@ -209,7 +214,8 @@ def process_batch(address_microbatch: DataFrame, batch_id: int)->None:
     address_debezium_schema = build_debezium_schema(customer_address_record_schema)
 
     process_customer_microbatch(spark, address_microbatch, batch_id, address_debezium_schema,
-                                silver_address_history_path, silver_quarantine_data_path, silver_rejected_data_path)
+                                silver_address_canonical_data_path,silver_address_history_path,
+                                silver_quarantine_data_path, silver_rejected_data_path)
 
 def run_customer_address_silver() -> None:
     """Run the Customer address Bronze-to-Silver CDC transformation.
@@ -231,14 +237,6 @@ def run_customer_address_silver() -> None:
                              .trigger(availableNow=True).start())
 
     address_silver_query.awaitTermination()
-
-    silver_customer_history_path = get_silver_paths(settings, "customer", "customer_addresses", "cdc_history")
-    silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_addresses", "rejected")
-    test_history = spark.read.format("delta").load(silver_customer_history_path)
-    test_rejected = spark.read.format("delta").load(silver_rejected_data_path)
-    test_history.show()
-    test_rejected.show()
-
 
 if __name__ == "__main__":
     run_customer_address_silver()
