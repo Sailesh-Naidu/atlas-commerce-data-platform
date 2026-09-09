@@ -1,3 +1,4 @@
+import structlog
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType
@@ -13,15 +14,16 @@ from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
     split_cdc_events,
 )
 
+logger = structlog.get_logger(__name__)
 
-def build_customer_address_schema() -> StructType:
+def build_address_schema() -> StructType:
     """Build the source schema for Customer address records in Debezium CDC events.
 
     Returns:
         Spark StructType describing the Customer address record as represented in the
         Debezium payload before canonical type normalization.
     """
-    customer_address_record_schema = StructType([
+    address_record_schema = StructType([
         StructField("address_id", LongType(), False),
         StructField("customer_id", LongType(), False),
         StructField("address_type", StringType(), False),
@@ -35,9 +37,9 @@ def build_customer_address_schema() -> StructType:
         StructField("created_at", StringType(), False),
         StructField("updated_at", StringType(), False),
     ])
-    return customer_address_record_schema
+    return address_record_schema
 
-def normalize_customer_address(customer_address_cdc_record: DataFrame) -> DataFrame:
+def normalize_address(address_cdc_record: DataFrame) -> DataFrame:
     """Normalize a parsed Customer address CDC record into the canonical Customer address shape.
 
     Flattens the selected Customer address struct, converts source-specific date and
@@ -45,13 +47,13 @@ def normalize_customer_address(customer_address_cdc_record: DataFrame) -> DataFr
     ingestion metadata required by downstream Silver processing.
 
     Args:
-        customer_address_cdc_record: DataFrame containing the effective Customer address CDC
+        address_cdc_record: DataFrame containing the effective Customer address CDC
             record selected from the Debezium before or after struct.
 
     Returns:
         DataFrame containing normalized Customer address fields and CDC metadata.
     """
-    return  customer_address_cdc_record.select(
+    return  address_cdc_record.select(
         F.col("customer_addresses.address_id").alias("address_id"),
         F.col("customer_addresses.customer_id").alias("customer_id"),
         F.col("customer_addresses.address_type").alias("address_type"),
@@ -76,7 +78,7 @@ def normalize_customer_address(customer_address_cdc_record: DataFrame) -> DataFr
         F.col("ingested_at").alias("ingested_at"),
     )
 
-def apply_customer_address_dq(
+def apply_address_dq(
     customer_address_data: DataFrame,
 ) -> DataFrame:
     """Apply row-level Customer address data-quality rules.
@@ -87,7 +89,7 @@ def apply_customer_address_dq(
     Returns:
         DataFrame with a dq_errors array containing all failed DQ rules per row.
     """
-    customer_address_filter_condition = F.array(
+    address_filter_condition = F.array(
         F.when(F.col("address_id").isNull(),F.lit("MISSING_ADDRESS_ID"),),
         F.when(F.col("customer_id").isNull(),F.lit("MISSING_CUSTOMER_ID"),),
 
@@ -106,7 +108,7 @@ def apply_customer_address_dq(
         F.when(F.col("is_primary").isNull(),F.lit("MISSING_IS_PRIMARY"),),
     )
 
-    return customer_address_data.withColumn("dq_errors",F.array_compact(customer_address_filter_condition),)
+    return customer_address_data.withColumn("dq_errors",F.array_compact(address_filter_condition),)
 
 
 def split_customer_address_dq(
@@ -120,15 +122,15 @@ def split_customer_address_dq(
     Returns:
         Tuple containing valid Customer address records and quarantined records.
     """
-    customer_address_valid_data = (customer_address_error_info.filter(F.size(F.col("dq_errors")) == 0)
+    address_valid_data = (customer_address_error_info.filter(F.size(F.col("dq_errors")) == 0)
         .drop("dq_errors"))
 
-    customer_address_quarantine_data = (customer_address_error_info.filter(F.size(F.col("dq_errors")) > 0)
+    address_quarantine_data = (customer_address_error_info.filter(F.size(F.col("dq_errors")) > 0)
         .withColumn("dq_error_count", F.size(F.col("dq_errors")),)
         .withColumn("quarantined_at",F.current_timestamp(),
         ))
 
-    return customer_address_valid_data, customer_address_quarantine_data,
+    return address_valid_data, address_quarantine_data,
 
 def process_customer_microbatch(spark,address_bronze_data: DataFrame, batch_id: int,
                                 customer_debezium_schema: StructType, silver_address_canonical_data_path: str,
@@ -155,42 +157,86 @@ def process_customer_microbatch(spark,address_bronze_data: DataFrame, batch_id: 
             ordering events.
     """
 
-    print(f"Processing Customer Silver micro-batch: {batch_id}")
+    logger.info("customer_addresses_silver_batch_started",batch_id=batch_id)
+    address_quarantine_data = None
+    address_cdc_accepted_events = None
+    address_cdc_rejected_events = None
+    try:
+        address_parsed_data = address_bronze_data.withColumn("debezium",
+                                                                               F.from_json(F.col("raw_value"),
+                                                                                           customer_debezium_schema))
 
-    customer_address_parsed_data = address_bronze_data.withColumn("debezium",
-                                                                           F.from_json(F.col("raw_value"),
-                                                                                       customer_debezium_schema))
+        addresses_cdc_record = select_cdc_record(address_parsed_data, "customer_addresses")
 
-    customer_addresses_cdc_record = select_cdc_record(customer_address_parsed_data, "customer_addresses")
+        address_data = normalize_address(addresses_cdc_record)
 
-    customer_address_data = normalize_customer_address(customer_addresses_cdc_record)
+        address_non_tombstone_data = address_data.filter(~F.col("is_tombstone"))
 
-    customer_address_non_tombstone_data = customer_address_data.filter(~F.col("is_tombstone"))
+        address_error_info = apply_address_dq(address_non_tombstone_data)
 
-    customer_address_error_info = apply_customer_address_dq(customer_address_non_tombstone_data)
+        address_valid_data, address_quarantine_data = split_customer_address_dq(address_error_info)
 
-    customer_address_valid_data, customer_address_quarantine_data = (split_customer_address_dq
-                                                                     (customer_address_error_info))
+        address_quarantine_data = address_quarantine_data.persist()
 
-    address_incoming_orderable_data, address_incoming_ambiguous_events = (split_cdc_events(customer_address_valid_data,
-                                                                                           "address_id"))
+        quarantine_count = address_quarantine_data.count()
 
-    address_cdc_accepted_events, address_cdc_rejected_events = classify_cdc_against_history(spark,
-                                                                                            silver_address_history_path,
-                                                                                            "address_id",
-                                                                                            address_incoming_orderable_data,
-                                                                                            address_incoming_ambiguous_events)
+        if quarantine_count > 0:
+            logger.warning("customer_addresses_silver_quarantine_records", batch_id=batch_id, record_count=quarantine_count, )
+        address_incoming_orderable_data, address_incoming_ambiguous_events = (split_cdc_events(address_valid_data,
+                                                                                               "address_id"))
 
-    # DQ quarantine
-    merge_cdc_events(spark, customer_address_quarantine_data, silver_quarantine_data_path, )
+        address_cdc_accepted_events, address_cdc_rejected_events = classify_cdc_against_history(spark,
+                                                                                                silver_address_history_path,
+                                                                                                "address_id",
+                                                                                                address_incoming_orderable_data,
+                                                                                                address_incoming_ambiguous_events)
+        address_cdc_accepted_events = address_cdc_accepted_events.persist()
+        address_cdc_rejected_events = address_cdc_rejected_events.persist()
 
-    # Accepted CDC history
-    merge_cdc_events(spark, address_cdc_accepted_events, silver_address_history_path, )
+        accepted_count = address_cdc_accepted_events.count()
+        rejected_count = address_cdc_rejected_events.count()
 
-    merge_cdc_canonical_events(spark, silver_address_canonical_data_path, address_cdc_accepted_events, "address_id")
-    # Persist CDC ordering rejections
-    if address_cdc_rejected_events is not None:
+        logger.info(
+            "customer_addresses_silver_accepted_events",
+            batch_id=batch_id,
+            record_count=accepted_count,
+        )
+
+        if rejected_count > 0:
+            logger.warning(
+                "customer_addresses_silver_cdc_rejected_records",
+                batch_id=batch_id,
+                record_count=rejected_count,
+            )
+
+        # DQ quarantine
+        merge_cdc_events(spark, address_quarantine_data, silver_quarantine_data_path, )
+
+        # Accepted CDC history
+        merge_cdc_events(spark, address_cdc_accepted_events, silver_address_history_path, )
+
+        merge_cdc_canonical_events(spark, silver_address_canonical_data_path, address_cdc_accepted_events, "address_id")
+        # Persist CDC ordering rejections
         merge_cdc_events(spark, address_cdc_rejected_events, silver_rejected_data_path, )
+
+        logger.info(
+        "customer_addresses_silver_batch_completed",
+        batch_id=batch_id,
+        accepted_count=accepted_count,
+        quarantine_count=quarantine_count,
+        rejected_count=rejected_count,
+    )
+    except Exception:
+        logger.exception("customer_addresses_silver_batch_failed", batch_id=batch_id, )
+        raise
+
+    finally:
+        if address_quarantine_data is not None:
+            address_quarantine_data.unpersist()
+        if address_cdc_accepted_events is not None:
+            address_cdc_accepted_events.unpersist()
+        if address_cdc_rejected_events is not None:
+            address_cdc_rejected_events.unpersist()
 
 
 def process_batch(address_microbatch: DataFrame, batch_id: int)->None:
@@ -210,8 +256,8 @@ def process_batch(address_microbatch: DataFrame, batch_id: int)->None:
     silver_address_history_path = get_silver_paths(settings, "customer", "customer_addresses", "cdc_history")
     silver_quarantine_data_path = get_silver_paths(settings, "customer", "customer_addresses", "quarantine")
     silver_rejected_data_path = get_silver_paths(settings, "customer", "customer_addresses", "rejected")
-    customer_address_record_schema = build_customer_address_schema()
-    address_debezium_schema = build_debezium_schema(customer_address_record_schema)
+    address_record_schema = build_address_schema()
+    address_debezium_schema = build_debezium_schema(address_record_schema)
 
     process_customer_microbatch(spark, address_microbatch, batch_id, address_debezium_schema,
                                 silver_address_canonical_data_path,silver_address_history_path,

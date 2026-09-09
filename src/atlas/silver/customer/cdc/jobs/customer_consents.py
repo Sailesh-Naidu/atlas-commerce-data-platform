@@ -1,3 +1,4 @@
+import structlog
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType
@@ -13,6 +14,7 @@ from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
     split_cdc_events,
 )
 
+logger = structlog.get_logger(__name__)
 
 def build_customer_consent_schema() -> StructType:
     """Build the source schema for Customer consent records in Debezium CDC events.
@@ -31,7 +33,7 @@ def build_customer_consent_schema() -> StructType:
     ])
     return customer_consent_record_schema
 
-def normalize_customer_consent(customer_consent_cdc_record: DataFrame) -> DataFrame:
+def normalize_consent(customer_consent_cdc_record: DataFrame) -> DataFrame:
     """Normalize a parsed Customer consent CDC record into the canonical Customer consent shape.
 
     Flattens the selected Customer consent struct, converts source-specific date and
@@ -64,7 +66,7 @@ def normalize_customer_consent(customer_consent_cdc_record: DataFrame) -> DataFr
         F.col("ingested_at").alias("ingested_at"),
     )
 
-def apply_customer_consent_dq(
+def apply_consent_dq(
     customer_consent_data: DataFrame,
 ) -> DataFrame:
     """Apply row-level Customer consent data-quality rules.
@@ -84,7 +86,7 @@ def apply_customer_consent_dq(
     return customer_consent_data.withColumn("dq_errors",F.array_compact(customer_consent_filter_condition),)
 
 
-def split_customer_consent_dq(
+def split_consent_dq(
     customer_consent_error_info: DataFrame,
 ) -> tuple[DataFrame, DataFrame]:
     """Split evaluated Customer consent records into valid and quarantine datasets.
@@ -129,43 +131,84 @@ def process_consents_microbatch(spark: SparkSession,consent_bronze_data: DataFra
         silver_rejected_data_path: Silver path for records rejected by CDC ordering rules.
     """
 
-    print(f"Processing Customer Silver micro-batch: {batch_id}")
+    logger.info("customer_consents_silver_batch_started", batch_id=batch_id)
 
-    customer_consent_parsed_data = consent_bronze_data.withColumn("debezium",
-                                                                           F.from_json(F.col("raw_value"),
-                                                                                       customer_debezium_schema))
+    consent_quarantine_data = None
+    consent_cdc_accepted_events = None
+    consent_cdc_rejected_events = None
+    try:
+        consent_parsed_data = consent_bronze_data.withColumn("debezium",
+                                                                               F.from_json(F.col("raw_value"),
+                                                                                           customer_debezium_schema))
 
-    customer_consent_cdc_record = select_cdc_record(customer_consent_parsed_data, "customer_consent")
+        consent_cdc_record = select_cdc_record(consent_parsed_data, "customer_consent")
 
-    customer_consent_data = normalize_customer_consent(customer_consent_cdc_record)
+        consent_data = normalize_consent(consent_cdc_record)
 
-    customer_consent_non_tombstone_data = customer_consent_data.filter(~F.col("is_tombstone"))
+        consent_non_tombstone_data = consent_data.filter(~F.col("is_tombstone"))
 
-    customer_consent_error_info = apply_customer_consent_dq(customer_consent_non_tombstone_data)
+        consent_error_info = apply_consent_dq(consent_non_tombstone_data)
 
-    customer_consent_valid_data, customer_consent_quarantine_data = (split_customer_consent_dq
-                                                                     (customer_consent_error_info))
+        consent_valid_data, consent_quarantine_data = split_consent_dq(consent_error_info)
 
-    consent_incoming_orderable_data, consent_incoming_ambiguous_events = split_cdc_events(customer_consent_valid_data,
-                                                                                          "consent_id")
+        consent_quarantine_data = consent_quarantine_data.persist()
 
-    consent_cdc_accepted_events, consent_cdc_rejected_events = classify_cdc_against_history(spark,
-                                                                                            silver_consent_history_path,
-                                                                                            "consent_id",
-                                                                                            consent_incoming_orderable_data,
-                                                                                            consent_incoming_ambiguous_events)
+        quarantine_count = consent_quarantine_data.count()
 
-    # DQ quarantine
-    merge_cdc_events(spark, customer_consent_quarantine_data, silver_quarantine_data_path, )
+        if quarantine_count > 0:
+            logger.warning("customer_consents_silver_quarantine_records", batch_id=batch_id, record_count=quarantine_count, )
 
-    # Accepted CDC history
-    merge_cdc_events(spark, consent_cdc_accepted_events, silver_consent_history_path, )
+        consent_incoming_orderable_data, consent_incoming_ambiguous_events = split_cdc_events(consent_valid_data,
+                                                                                              "consent_id")
 
-    merge_cdc_canonical_events(spark, silver_consents_canonical_data_path, consent_cdc_accepted_events, "consent_id")
+        consent_cdc_accepted_events, consent_cdc_rejected_events = classify_cdc_against_history(spark,
+                                                                                                silver_consent_history_path,
+                                                                                                "consent_id",
+                                                                                                consent_incoming_orderable_data,
+                                                                                                consent_incoming_ambiguous_events)
 
-    # Persist CDC ordering rejections
-    if consent_cdc_rejected_events is not None:
+        consent_cdc_accepted_events = consent_cdc_accepted_events.persist()
+        consent_cdc_rejected_events = consent_cdc_rejected_events.persist()
+
+        accepted_count = consent_cdc_accepted_events.count()
+        rejected_count = consent_cdc_rejected_events.count()
+
+        logger.info("customer_consents_silver_accepted_events",batch_id=batch_id,record_count=accepted_count,)
+
+        if rejected_count > 0:
+            logger.warning("customer_consents_silver_cdc_rejected_records",batch_id=batch_id,record_count=rejected_count,)
+
+
+        # DQ quarantine
+        merge_cdc_events(spark, consent_quarantine_data, silver_quarantine_data_path, )
+
+        # Accepted CDC history
+        merge_cdc_events(spark, consent_cdc_accepted_events, silver_consent_history_path, )
+
+        merge_cdc_canonical_events(spark, silver_consents_canonical_data_path, consent_cdc_accepted_events, "consent_id")
+
+        # Persist CDC ordering rejections
         merge_cdc_events(spark, consent_cdc_rejected_events, silver_rejected_data_path, )
+
+        logger.info(
+                "customer_consents_silver_batch_completed",
+                batch_id=batch_id,
+                accepted_count=accepted_count,
+                quarantine_count=quarantine_count,
+                rejected_count=rejected_count,
+        )
+    except Exception:
+        logger.exception("customer_consents_silver_batch_failed", batch_id=batch_id, )
+        raise
+
+
+    finally:
+        if consent_quarantine_data is not None:
+            consent_quarantine_data.unpersist()
+        if consent_cdc_accepted_events is not None:
+            consent_cdc_accepted_events.unpersist()
+        if consent_cdc_rejected_events is not None:
+            consent_cdc_rejected_events.unpersist()
 
 def process_batch(consent_microbatch: DataFrame, batch_id: int) -> None:
     """Process a Structured Streaming Customer consent micro-batch.

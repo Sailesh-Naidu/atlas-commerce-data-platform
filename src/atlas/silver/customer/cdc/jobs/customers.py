@@ -1,3 +1,4 @@
+import structlog
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import LongType, StringType, StructField, StructType
@@ -13,6 +14,7 @@ from atlas.silver.customer.cdc.jobs.customer_cdc_common import (
     split_cdc_events,
 )
 
+logger = structlog.get_logger(__name__)
 
 def build_customer_schema() -> StructType:
     """Build the source schema for Customer records in Debezium CDC events.
@@ -119,7 +121,7 @@ def split_customer_dq(customer_contain_error_info: DataFrame,) -> tuple[DataFram
 
 
 def process_customer_microbatch(spark: SparkSession,customer_bronze_data: DataFrame, batch_id: int,
-                                customer_debezium_schema: StructType, silver_customer_canonical_data_path,
+                                customer_debezium_schema: StructType, silver_customer_canonical_data_path: str,
                                 silver_customer_history_path: str,silver_quarantine_data_path: str,
                                 silver_rejected_data_path: str)-> None:
     """Process one Customer Bronze micro-batch into Silver datasets.
@@ -141,41 +143,87 @@ def process_customer_microbatch(spark: SparkSession,customer_bronze_data: DataFr
         silver_quarantine_data_path: Silver path for records failing data-quality rules.
         silver_rejected_data_path: Silver path for records rejected by CDC ordering rules.
     """
+    logger.info("customer_silver_batch_started",batch_id=batch_id)
+    customer_quarantine_data = None
+    customer_cdc_accepted_events = None
+    customer_cdc_rejected_events = None
 
-    print(f"Processing Customer Silver micro-batch: {batch_id}")
+    try:
+        customer_parsed_data = customer_bronze_data.withColumn("debezium",
+                                                               F.from_json(F.col("raw_value"), customer_debezium_schema))
 
-    customer_parsed_data = customer_bronze_data.withColumn("debezium",
-                                                           F.from_json(F.col("raw_value"), customer_debezium_schema))
+        customer_cdc_record = select_cdc_record(customer_parsed_data, "customer")
 
-    customer_cdc_record = select_cdc_record(customer_parsed_data, "customer")
+        customer_data = normalize_customer(customer_cdc_record)
 
-    customer_data = normalize_customer(customer_cdc_record)
+        customer_non_tombstone_data = customer_data.filter(~F.col("is_tombstone"))
+        customer_contain_error_info = apply_customer_dq(customer_non_tombstone_data)
 
-    customer_non_tombstone_data = customer_data.filter(~F.col("is_tombstone"))
-    customer_contain_error_info = apply_customer_dq(customer_non_tombstone_data)
+        customer_valid_data, customer_quarantine_data = split_customer_dq(customer_contain_error_info)
 
-    customer_valid_data, customer_quarantine_data = split_customer_dq(customer_contain_error_info)
+        customer_quarantine_data = customer_quarantine_data.persist()
 
-    customer_incoming_orderable_data, customer_incoming_ambiguous_events = split_cdc_events(customer_valid_data,
-                                                                                            "customer_id")
+        quarantine_count = customer_quarantine_data.count()
 
-    customer_cdc_accepted_events, customer_cdc_rejected_events = classify_cdc_against_history(spark,
-                                                                                              silver_customer_history_path,
-                                                                                              "customer_id",
-                                                                                              customer_incoming_orderable_data,
-                                                                                              customer_incoming_ambiguous_events)
+        if quarantine_count > 0:
+            logger.warning("customer_silver_quarantine_records",batch_id=batch_id,record_count=quarantine_count,)
 
-    # DQ quarantine
-    merge_cdc_events(spark, customer_quarantine_data, silver_quarantine_data_path, )
+        customer_incoming_orderable_data, customer_incoming_ambiguous_events = split_cdc_events(customer_valid_data,
+                                                                                                "customer_id")
 
-    # Accepted CDC history
-    merge_cdc_events(spark, customer_cdc_accepted_events, silver_customer_history_path, )
+        customer_cdc_accepted_events, customer_cdc_rejected_events = classify_cdc_against_history(spark,
+                                                                                                  silver_customer_history_path,
+                                                                                                  "customer_id",
+                                                                                                  customer_incoming_orderable_data,
+                                                                                                  customer_incoming_ambiguous_events)
 
-    merge_cdc_canonical_events(spark, silver_customer_canonical_data_path, customer_cdc_accepted_events, "customer_id")
+        customer_cdc_accepted_events = customer_cdc_accepted_events.persist()
+        customer_cdc_rejected_events = customer_cdc_rejected_events.persist()
 
-    # Persist CDC ordering rejections
-    if customer_cdc_rejected_events is not None:
+        accepted_count = customer_cdc_accepted_events.count()
+        rejected_count = customer_cdc_rejected_events.count()
+
+        logger.info(
+            "customer_silver_accepted_events",
+            batch_id=batch_id,
+            record_count=accepted_count,
+        )
+
+        if rejected_count > 0:
+            logger.warning(
+                "customer_silver_cdc_rejected_records",
+                batch_id=batch_id,
+                record_count=rejected_count,
+            )
+        # DQ quarantine
+        merge_cdc_events(spark, customer_quarantine_data, silver_quarantine_data_path, )
+
+        # Accepted CDC history
+        merge_cdc_events(spark, customer_cdc_accepted_events, silver_customer_history_path, )
+
+        merge_cdc_canonical_events(spark, silver_customer_canonical_data_path, customer_cdc_accepted_events, "customer_id")
+
+        # Persist CDC ordering rejections
         merge_cdc_events(spark, customer_cdc_rejected_events, silver_rejected_data_path, )
+
+        logger.info(
+                "customer_silver_batch_completed",
+                batch_id=batch_id,
+                accepted_count=accepted_count,
+                quarantine_count=quarantine_count,
+                rejected_count=rejected_count,
+        )
+    except Exception:
+        logger.exception("customer_silver_batch_failed",batch_id=batch_id,)
+        raise
+
+    finally:
+        if customer_quarantine_data is not None:
+            customer_quarantine_data.unpersist()
+        if customer_cdc_accepted_events is not None:
+            customer_cdc_accepted_events.unpersist()
+        if customer_cdc_rejected_events is not None:
+            customer_cdc_rejected_events.unpersist()
 
 def process_batch(customer_microbatch: DataFrame, batch_id: int) -> None:
     """Process a Structured Streaming Customer micro-batch.
