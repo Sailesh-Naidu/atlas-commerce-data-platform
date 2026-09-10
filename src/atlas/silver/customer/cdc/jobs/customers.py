@@ -87,18 +87,30 @@ def apply_customer_dq(customer_data: DataFrame) -> DataFrame:
     Returns:
         DataFrame with a dq_errors array containing all failed DQ rules per row.
     """
-    customer_filter_condition = (
-        F.array(
-            F.when(F.col("customer_id").isNull(), F.lit("MISSING_CUSTOMER_ID")),
-            F.when((F.col("first_name").isNull() | (F.trim(F.col("first_name")) == "")), F.lit("MISSING_FIRST_NAME")),
-            F.when((F.col("last_name").isNull() | (F.trim(F.col("last_name")) == "")), F.lit("MISSING_LAST_NAME")),
-            F.when((F.col("email").isNull() & F.col("phone_number").isNull()), F.lit("MISSING_CONTACT_INFO")),
-            F.when(F.col("date_of_birth") > F.current_date(), F.lit("FUTURE_DATE_OF_BIRTH")),
-            F.when(~F.col("status").isin(["ACTIVE", "INACTIVE", "SUSPENDED"]), F.lit("INVALID_STATUS")),
-            F.when(~F.col("segment").isin(["STANDARD", "GOLD", "PREMIUM"]), F.lit("INVALID_SEGMENT"))
-        ))
+    customer_business_conditions = (F.array(
+        F.when((F.col("first_name").isNull() | (F.trim(F.col("first_name")) == "")), F.lit("MISSING_FIRST_NAME")),
+        F.when((F.col("last_name").isNull() | (F.trim(F.col("last_name")) == "")), F.lit("MISSING_LAST_NAME")),
+        F.when((F.col("email").isNull()| (F.trim(F.col("email")) == ""))&
+            (F.col("phone_number").isNull()| (F.trim(F.col("phone_number")) == "")),
+            F.lit("MISSING_CONTACT_INFO")),
+        F.when(F.col("date_of_birth") > F.current_date(), F.lit("FUTURE_DATE_OF_BIRTH")),
+        F.when(F.col("status").isNull() | ~F.col("status").isin(["ACTIVE", "INACTIVE", "SUSPENDED"]), F.lit("INVALID_STATUS")),
+        F.when(F.col("segment").isNull() |~F.col("segment").isin(["STANDARD", "GOLD", "PREMIUM"]), F.lit("INVALID_SEGMENT"))
+    ))
 
-    return customer_data.withColumn("dq_errors", F.array_compact(customer_filter_condition))
+    common_cdc_conditions = F.array(
+        F.when(F.col("cdc_operation").isNull()| ~F.col("cdc_operation").isin(["c", "u", "r", "d"]),F.lit("INVALID_CDC_OPERATION"),),
+        F.when(F.col("customer_id").isNull(), F.lit("MISSING_CUSTOMER_ID")),
+        F.when(F.col("kafka_topic").isNull(), F.lit("MISSING_KAFKA_TOPIC")),
+        F.when(F.col("kafka_partition").isNull(), F.lit("MISSING_KAFKA_PARTITION")),
+        F.when(F.col("kafka_offset").isNull(), F.lit("MISSING_KAFKA_OFFSET")),
+        F.when(F.col("source_lsn").isNull(), F.lit("MISSING_SOURCE_LSN")),
+    )
+    dq_errors = (F.when(
+        F.col("cdc_operation") == "d",common_cdc_conditions,)
+                 .otherwise(F.concat(common_cdc_conditions,customer_business_conditions,)))
+
+    return customer_data.withColumn("dq_errors", F.array_compact(dq_errors))
 
 def split_customer_dq(customer_contain_error_info: DataFrame,) -> tuple[DataFrame, DataFrame]:
     """Split evaluated Customer records into valid and quarantine datasets.

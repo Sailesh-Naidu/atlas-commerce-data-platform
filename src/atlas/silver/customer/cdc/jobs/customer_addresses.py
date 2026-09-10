@@ -89,26 +89,43 @@ def apply_address_dq(
     Returns:
         DataFrame with a dq_errors array containing all failed DQ rules per row.
     """
-    address_filter_condition = F.array(
-        F.when(F.col("address_id").isNull(),F.lit("MISSING_ADDRESS_ID"),),
-        F.when(F.col("customer_id").isNull(),F.lit("MISSING_CUSTOMER_ID"),),
+    common_cdc_conditions = F.array(
+        F.when(
+            F.col("cdc_operation").isNull()
+            | ~F.col("cdc_operation").isin(["c", "u", "r", "d"]),
+            F.lit("INVALID_CDC_OPERATION"),
+        ),
+        F.when(F.col("address_id").isNull(), F.lit("MISSING_ADDRESS_ID")),
+        F.when(F.col("kafka_topic").isNull(), F.lit("MISSING_KAFKA_TOPIC")),
+        F.when(F.col("kafka_partition").isNull(), F.lit("MISSING_KAFKA_PARTITION")),
+        F.when(F.col("kafka_offset").isNull(), F.lit("MISSING_KAFKA_OFFSET")),
+        F.when(F.col("source_lsn").isNull(), F.lit("MISSING_SOURCE_LSN")),
+    )
 
-        F.when(F.col("address_type").isNull()| ~F.col("address_type").isin(["HOME", "SHIPPING", "BILLING"]),
+    address_business_conditions = F.array(
+        F.when(F.col("customer_id").isNull(), F.lit("MISSING_CUSTOMER_ID")),
+        F.when(
+            F.col("address_type").isNull()| ~F.col("address_type").isin(["HOME", "SHIPPING", "BILLING"]),
             F.lit("INVALID_ADDRESS_TYPE"),),
-
         F.when(F.col("address_line_1").isNull()| (F.trim(F.col("address_line_1")) == ""),
             F.lit("MISSING_ADDRESS_LINE_1"),),
-        F.when(F.col("city").isNull()| (F.trim(F.col("city")) == ""),F.lit("MISSING_CITY"),),
-
+        F.when(F.col("city").isNull()| (F.trim(F.col("city")) == ""),
+            F.lit("MISSING_CITY"),),
         F.when(F.col("postal_code").isNull()| (F.trim(F.col("postal_code")) == ""),
             F.lit("MISSING_POSTAL_CODE"),),
-
-        F.when( F.col("country").isNull()| (F.trim(F.col("country")) == ""),
+        F.when(F.col("country").isNull()| (F.trim(F.col("country")) == ""),
             F.lit("MISSING_COUNTRY"),),
         F.when(F.col("is_primary").isNull(),F.lit("MISSING_IS_PRIMARY"),),
     )
 
-    return customer_address_data.withColumn("dq_errors",F.array_compact(address_filter_condition),)
+    dq_errors = (F.when(
+        F.col("cdc_operation") == "d",common_cdc_conditions,)
+                 .otherwise(F.concat(common_cdc_conditions, address_business_conditions)))
+
+    return customer_address_data.withColumn(
+        "dq_errors",
+        F.array_compact(dq_errors),
+    )
 
 
 def split_customer_address_dq(
