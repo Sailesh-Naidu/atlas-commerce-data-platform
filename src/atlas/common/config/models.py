@@ -35,6 +35,7 @@ class StorageSettings(AtlasBaseSettings):
     lakehouse_root: Path
     checkpoint_root: Path
     quarantine_root: Path
+    snapshot_root: Path
 
     endpoint: str | None = None
     bucket: str | None = None
@@ -77,6 +78,10 @@ class CustomerSettings(AtlasBaseSettings):
     customer_addresses_topic: str
     customer_consents_topic: str
 
+class ReconciliationRunSettings(AtlasBaseSettings):
+    """Reconciliation-level configuration settings."""
+    bucket_count: int = Field(gt=0)
+
 class AtlasSettings(AtlasBaseSettings):
     """Root configuration object for the Atlas platform."""
     application: ApplicationSettings
@@ -85,3 +90,5 @@ class AtlasSettings(AtlasBaseSettings):
     logging: LoggingSettings
     kafka: KafkaSettings
     customer:CustomerSettings
+    reconciliation: ReconciliationRunSettings
+

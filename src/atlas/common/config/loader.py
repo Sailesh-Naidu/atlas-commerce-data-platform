@@ -143,6 +143,7 @@ def _get_settings_cached(base_yaml: Path, env_yaml: Path, pyproject_path: Path) 
                 "lakehouse_root",
                 "checkpoint_root",
                 "quarantine_root",
+                "snapshot_root"
         ):
             configured_path = Path(storage_config[path_key])
 
