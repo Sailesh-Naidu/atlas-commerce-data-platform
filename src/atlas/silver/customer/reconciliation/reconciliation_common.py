@@ -13,25 +13,10 @@ def get_reconciliation_status_bucket_condition() -> Column:
             MISSING_IN_SNAPSHOT, MISSING_IN_CDC, COUNT_MISMATCH,
             or CHECKSUM_MISMATCH.
     """
-    return (
-        F.when(
-            F.col("snapshot_row_count").isNull()
-            & F.col("cdc_row_count").isNotNull(),
-            F.lit("MISSING_IN_SNAPSHOT"),
-        )
-        .when(
-            F.col("cdc_row_count").isNull()
-            & F.col("snapshot_row_count").isNotNull(),
-            F.lit("MISSING_IN_CDC"),
-        )
-        .when(
-            F.col("snapshot_row_count") != F.col("cdc_row_count"),
-            F.lit("COUNT_MISMATCH"),
-        )
-        .when(
-            F.col("snapshot_checksum") != F.col("cdc_checksum"),
-            F.lit("CHECKSUM_MISMATCH"),
-        )
+    return (F.when(F.col("snapshot_row_count").isNull()& F.col("cdc_row_count").isNotNull(),F.lit("MISSING_IN_SNAPSHOT"),)
+        .when(F.col("cdc_row_count").isNull()& F.col("snapshot_row_count").isNotNull(),F.lit("MISSING_IN_CDC"),)
+        .when(F.col("snapshot_row_count") != F.col("cdc_row_count"),F.lit("COUNT_MISMATCH"),)
+        .when(F.col("snapshot_checksum") != F.col("cdc_checksum"),F.lit("CHECKSUM_MISMATCH"),)
         .otherwise(F.lit("MATCH"))
     )
 
@@ -44,23 +29,11 @@ def get_reconciliation_row_status_condition() -> Column:
         Column: A Spark column expression producing one of MATCH,
             MISSING_IN_SNAPSHOT, MISSING_IN_CDC, or CHECKSUM_MISMATCH.
     """
-    return (
-        F.when(
-            F.col("snapshot_present").isNull()
-            & F.col("cdc_present").isNotNull(),
-            F.lit("MISSING_IN_SNAPSHOT"),
-        )
-        .when(
-            F.col("cdc_present").isNull()
-            & F.col("snapshot_present").isNotNull(),
-            F.lit("MISSING_IN_CDC"),
-        )
-        .when(
-            F.col("snapshot_row_checksum") != F.col("cdc_row_checksum"),
-            F.lit("CHECKSUM_MISMATCH"),
-        )
-        .otherwise(F.lit("MATCH"))
-    )
+    return (F.when(
+            F.col("snapshot_present").isNull()& F.col("cdc_present").isNotNull(),F.lit("MISSING_IN_SNAPSHOT"),)
+        .when(F.col("cdc_present").isNull()& F.col("snapshot_present").isNotNull(),F.lit("MISSING_IN_CDC"),)
+        .when(F.col("snapshot_row_checksum") != F.col("cdc_row_checksum"),F.lit("CHECKSUM_MISMATCH"),)
+        .otherwise(F.lit("MATCH")))
 
 
 def attach_snapshot_metadata(snapshot_dataframe: DataFrame,entity: str,snapshot_as_of: str,) -> DataFrame:
@@ -76,31 +49,14 @@ def attach_snapshot_metadata(snapshot_dataframe: DataFrame,entity: str,snapshot_
         DataFrame: Snapshot DataFrame enriched with snapshot, source,
             batch, schema-version, and ingestion metadata.
     """
-    return (
-        snapshot_dataframe
+    return (snapshot_dataframe
         .withColumn("snapshot_as_of",F.to_timestamp(F.lit(snapshot_as_of)),)
         .withColumn("source_date",F.to_date(F.col("snapshot_as_of")),)
-        .withColumn("batch_id",
-            F.concat_ws(
-                "_",
-                F.lit(f"{entity}_snapshot"),
-                F.date_format(F.col("snapshot_as_of"), "yyyyMMdd"),
-            ),
-        )
-        .withColumn(
-            "source_filename",
-            F.concat(
-                F.lit(f"{entity}_snapshot_"),
-                F.date_format(
-                    F.col("snapshot_as_of"),
-                    "yyyy-MM-dd",
-                ),
-                F.lit(".csv"),
-            ),
-        )
-        .withColumn("schema_version", F.lit(1))
-        .withColumn("ingested_at", F.current_timestamp())
-    )
+        .withColumn("batch_id",F.concat_ws(
+                "_",F.lit(f"{entity}_snapshot"),F.date_format(F.col("snapshot_as_of"), "yyyyMMdd"),),)
+        .withColumn("source_filename",F.concat(F.lit(f"{entity}_snapshot_"),
+                F.date_format(F.col("snapshot_as_of"),"yyyy-MM-dd",),F.lit(".csv"),),)
+        .withColumn("schema_version", F.lit(1)).withColumn("ingested_at", F.current_timestamp()))
 
 
 def get_snapshot_valid_data(snapshot_with_metadata: DataFrame,validation_conditions: Column,entity_key: str,) -> DataFrame:
@@ -131,7 +87,7 @@ def get_cdc_valid_data(spark: SparkSession,silver_entity_history_path: str,snaps
     Reconstruct the CDC entity state as of the snapshot timestamp.
 
     The latest CDC record for each business key is selected using source LSN
-    ordering, and entities whose latest operation is  delete are excluded.
+    ordering, and entities whose latest operation is  deleted are excluded.
 
     Args:
         spark: Active Spark session.
@@ -147,13 +103,14 @@ def get_cdc_valid_data(spark: SparkSession,silver_entity_history_path: str,snaps
 
     cdc_data_at_snapshot_time = entity_cdc_history.filter(F.col("source_timestamp")<= F.to_timestamp(F.lit(snapshot_as_of)))
 
-    entity_as_of_window = Window.partitionBy(entity_key).orderBy(F.col("source_lsn").desc())
+    entity_as_of_window = Window.partitionBy(entity_key).orderBy(F.col("source_lsn").desc(), F.col("kafka_offset").desc())
 
     reconstructed_cdc_entity_state = (cdc_data_at_snapshot_time
                                       .withColumn("rn",F.row_number().over(entity_as_of_window),).filter(F.col("rn") == 1)
                                       .drop("rn"))
 
-    return reconstructed_cdc_entity_state.filter(F.col("cdc_operation") != "d")
+    return (reconstructed_cdc_entity_state.filter(F.col("cdc_operation") != "d")
+            .withColumn("state_updated_as_of", F.to_timestamp(F.lit(snapshot_as_of))))
 
 
 def get_columns_renamed(reconciliation_columns: list[str],) -> tuple[list[Column], list[Column]]:
@@ -283,7 +240,7 @@ def get_reconciliation_records(bucket_count: int,snapshot_valid_records: DataFra
 
     reconciled_unmatched_rows = joined_snapshot_cdc.filter(F.col("reconciliation_status") != "MATCH")
 
-    reconciled_matched_rows = joined_snapshot_cdc.filter(F.col("reconciliation_status") == "MATCH")
+    _ = joined_snapshot_cdc.filter(F.col("reconciliation_status") == "MATCH")
 
     snapshot_columns, cdc_columns = get_columns_renamed(reconciliation_columns)
 
@@ -352,8 +309,186 @@ def get_reconciliation_run_metrics(snapshot_valid_records: DataFrame, reconstruc
         .withColumn("snapshot_as_of",F.to_timestamp(F.lit(snapshot_as_of)))
         .withColumn("reconciled_at",F.current_timestamp()))
 
+def persist_expected_state_metadata(expected_state: DataFrame,expected_state_metadata_path: str,entity_name: str,
+                                    state_as_of: str,reconciliation_run_id: str,is_first_run: bool,
+                                    previous_state_as_of: DataFrame | None = None,merge_result: DataFrame | None = None,
+                                    incremental_cdc_changes: DataFrame | None = None,) -> None:
+    """
+    Persist expected-state advancement metadata for bootstrap and incremental runs.
+
+    Bootstrap runs record the initial materialized state with no previous cutoff.
+    Incremental runs record the previous cutoff, Delta MERGE metrics, the number
+    of CDC events processed in the interval, and the post-merge state row count.
+
+    Args:
+        expected_state: Materialized expected entity state after bootstrap or merge.
+        expected_state_metadata_path: Delta path for expected-state metadata history.
+        entity_name: Logical entity name stored in metadata.
+        state_as_of: CDC cutoff represented by the materialized expected state.
+        reconciliation_run_id: Identifier shared with the reconciliation run.
+        is_first_run: Whether this is the initial expected-state bootstrap.
+        previous_state_as_of: Single-row DataFrame containing the prior state cutoff.
+            Required for incremental runs.
+        merge_result: Delta MERGE metrics DataFrame returned by execute().
+            Required for incremental runs.
+        incremental_cdc_changes: Raw CDC events processed between the previous
+            and current state cutoffs. Required for incremental runs.
+
+    Returns:
+        None: Metadata is appended to the expected-state metadata Delta table.
+
+    Raises:
+        ValueError: If required incremental-run inputs are missing.
+    """
+    state_metrics = expected_state.agg(
+        F.count("*").alias("state_row_count")
+    )
+
+    if is_first_run:
+        expected_state_metadata = (state_metrics
+            .withColumn("entity_name", F.lit(entity_name))
+            .withColumn("previous_state_as_of",F.lit(None).cast("timestamp"),)
+            .withColumn("state_as_of",F.to_timestamp(F.lit(state_as_of)),)
+            .withColumn("records_inserted",F.col("state_row_count"),)
+            .withColumn("records_updated",F.lit(0).cast("long"),)
+            .withColumn("records_deleted", F.lit(0).cast("long"),)
+            .withColumn("processed_cdc_rows",F.col("state_row_count"),)
+            .withColumn("reconciliation_run_id",F.lit(reconciliation_run_id),)
+            .withColumn("processed_at",F.current_timestamp(),))
+
+    else:
+        if previous_state_as_of is None or merge_result is None or incremental_cdc_changes is None:
+            raise ValueError(
+                "Incremental expected-state metadata requires "
+                "previous_state_as_of, merge_result, and incremental_cdc_changes"
+            )
+
+        previous_state_metrics = previous_state_as_of.select(F.col("state_as_of").alias("previous_state_as_of"))
+
+        merge_metrics = merge_result.select(
+            F.col("num_inserted_rows").cast("long").alias("records_inserted"),
+            F.col("num_updated_rows").cast("long").alias("records_updated"),
+            F.col("num_deleted_rows").cast("long").alias("records_deleted"),
+        )
+
+        processed_cdc_metrics = (incremental_cdc_changes.agg(F.count("*").cast("long").alias("processed_cdc_rows") ))
+
+        expected_state_metadata = (state_metrics.crossJoin(previous_state_metrics).crossJoin(merge_metrics).crossJoin(processed_cdc_metrics)
+            .withColumn("entity_name",F.lit(entity_name),)
+            .withColumn("state_as_of",F.to_timestamp(F.lit(state_as_of)),)
+            .withColumn("reconciliation_run_id",F.lit(reconciliation_run_id),)
+            .withColumn("processed_at",F.current_timestamp(),))
+
+
+    expected_state_metadata.write.format("delta").mode("append").save(expected_state_metadata_path)
+
+
+def persist_expected_state(spark: SparkSession, expected_state: DataFrame, expected_state_path:str,
+                           is_first_run: bool, entity_key:str) -> DataFrame | None:
+    """
+    Persist or incrementally advance the materialized expected entity state.
+
+    Bootstrap runs overwrite the expected-state Delta path. Incremental runs
+    MERGE the latest CDC change per entity key: create, update, and read events
+    upsert rows, while delete events remove rows.
+
+    Args:
+        spark: Active Spark session.
+        expected_state: Bootstrap state or latest incremental CDC changes.
+        expected_state_path: Delta path containing the materialized expected state.
+        is_first_run: Whether this is the initial expected-state bootstrap.
+        entity_key: Business key used to match source and target rows during MERGE.
+
+    Returns:
+        DataFrame | None: Delta MERGE metrics for incremental runs, otherwise None.
+    """
+    if is_first_run:
+        expected_state.write.format("delta").mode("overwrite").save(expected_state_path)
+        return None
+
+    expected_state_table = DeltaTable.forPath(spark,expected_state_path,)
+
+    merge_result = (expected_state_table.alias("target")
+        .merge(expected_state.alias("source"),F.col(f"target.{entity_key}")== F.col(f"source.{entity_key}"),)
+        .whenMatchedUpdateAll(condition="source.cdc_operation IN ('c', 'u', 'r')" )
+        .whenMatchedDelete(condition="source.cdc_operation = 'd'")
+        .whenNotMatchedInsertAll(condition="source.cdc_operation IN ('c', 'u', 'r')")
+        .execute()
+    )
+
+    return merge_result
+
+
 def persist_reconciliation_results(reconciliation_run_metrics: DataFrame,final_reconciliation_exceptions: DataFrame,
                                    run_summary_path: str,exception_detail_path: str,) -> None:
-    """Persist reconciliation outputs as append-only Delta datasets."""
+    """
+    Persist reconciliation summary and exception outputs as append-only Delta datasets.
+
+    Args:
+        reconciliation_run_metrics: Single-row reconciliation run summary.
+        final_reconciliation_exceptions: Row-level reconciliation exception records.
+        run_summary_path: Delta path for append-only reconciliation run summaries.
+        exception_detail_path: Delta path for append-only reconciliation exceptions.
+
+    Returns:
+        None: Both DataFrames are appended to their Delta datasets.
+    """
     final_reconciliation_exceptions.write.format("delta").mode("append").save(exception_detail_path)
     reconciliation_run_metrics.write.format("delta").mode("append").save(run_summary_path)
+
+def get_latest_expected_state_as_of(spark: SparkSession,expected_state_metadata_path: str,) -> DataFrame:
+    """
+    Read the latest recorded expected-state cutoff.
+
+    Args:
+        spark: Active Spark session.
+        expected_state_metadata_path: Delta path containing expected-state metadata history.
+
+    Returns:
+        DataFrame: Single-row DataFrame containing the maximum state_as_of timestamp.
+    """
+    return DeltaTable.forPath(spark, expected_state_metadata_path).toDF().agg(F.max("state_as_of").alias("state_as_of"))
+
+def get_incremental_cdc_changes(cdc_history: DataFrame,latest_state_as_of: DataFrame,current_state_as_of: str,) -> DataFrame:
+    """
+    Select CDC events for the next expected-state advancement interval.
+
+    The interval is open on the previous cutoff and closed on the current cutoff:
+    previous_state_as_of < source_timestamp <= current_state_as_of.
+
+    Args:
+        cdc_history: Append-only Silver CDC history for the entity.
+        latest_state_as_of: Single-row DataFrame containing the previous cutoff.
+        current_state_as_of: New cutoff to which expected state should advance.
+
+    Returns:
+        DataFrame: CDC events inside the incremental advancement interval.
+    """
+    return (cdc_history.crossJoin(latest_state_as_of.withColumnRenamed("state_as_of", "previous_state_as_of", ))
+            .filter((F.col("source_timestamp") > F.col("previous_state_as_of"))
+                    & (F.col("source_timestamp") <= F.to_timestamp(F.lit(current_state_as_of)))))
+
+def get_latest_incremental_cdc_changes(incremental_cdc_changes: DataFrame,entity_key: str,current_state_as_of: str) -> DataFrame:
+    """
+    Reduce incremental CDC events to the latest change for each entity key.
+
+    Events are ordered by source LSN descending with Kafka offset as a
+    deterministic tie-breaker, then tagged with the current state cutoff.
+
+    Args:
+        incremental_cdc_changes: CDC events selected for the current interval.
+        entity_key: Business key used to group CDC events by entity.
+        current_state_as_of: Cutoff represented by the advanced expected state.
+
+    Returns:
+        DataFrame: Latest CDC change per entity key with state_updated_as_of attached.
+    """
+
+    latest_window = (Window.partitionBy(entity_key).orderBy(F.col("source_lsn").desc(),F.col("kafka_offset").desc(),))
+
+    return (
+        incremental_cdc_changes.withColumn("rn",F.row_number().over(latest_window),)
+        .filter(F.col("rn") == 1).drop("rn","previous_state_as_of",)
+        .withColumn("state_updated_as_of",F.to_timestamp(F.lit(current_state_as_of)),))
+
+

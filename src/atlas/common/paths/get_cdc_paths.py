@@ -11,9 +11,6 @@ def get_bronze_paths(settings: AtlasSettings, domain: str, sub_domain: str)  -> 
 
     Returns:
         Tuple containing the domains bronze data path and checkpoint path.
-
-
-
     """
     paths = get_paths(settings)
     return (paths.bronze_path(f"{domain}/cdc/{sub_domain}/job"),
@@ -47,18 +44,20 @@ def get_reconciliation_paths(settings: AtlasSettings, domain: str, sub_domain:st
     paths = get_paths(settings)
     return paths.reconciliation_path(domain,sub_domain,dataset,)
 
-def get_snapshot_paths(settings: AtlasSettings, domain: str, snapshot_as_of: str) -> str:
-    """Build postgres snapshot paths
+def get_snapshot_paths(settings: AtlasSettings,domain: str,snapshot_as_of: str,) -> str:
+    """Build postgres snapshot paths.
     Args:
         settings: Validated Atlas application settings.
         domain: Validated Atlas domain name.
-        snapshot_as_of: snapshot as of date
+        snapshot_as_of: Snapshot cutoff timestamp.
     Returns:
-         postgres snapshot path
-
+        Postgres snapshot path.
     """
     paths = get_paths(settings)
-    return paths.snapshot_path(f"{domain}/{snapshot_as_of}.csv",)
+
+    snapshot_filename = (snapshot_as_of.replace(" ", "_").replace(":", "-"))
+
+    return paths.snapshot_path(f"{domain}/{snapshot_filename}.csv")
 
 def get_silver_checkpoint_path(settings: AtlasSettings,domain: str,sub_domain: str,) -> str:
     """Build the checkpoint path for a Silver CDC streaming job.
@@ -66,8 +65,6 @@ def get_silver_checkpoint_path(settings: AtlasSettings,domain: str,sub_domain: s
         settings: Validated Atlas application settings.
         domain: Validated Atlas domain name.
         sub_domain: Name of entity folder to write data
-
-
     Returns:
         silver checkpoint path."""
 
