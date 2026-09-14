@@ -1,5 +1,4 @@
 from functools import lru_cache
-from pathlib import Path
 
 from atlas.common.config.models import AtlasSettings
 from atlas.common.paths.paths import AtlasPaths
@@ -18,12 +17,14 @@ def get_paths(settings: AtlasSettings) -> AtlasPaths:
     if settings.storage.mode == "object_store":
         base_path = f"s3a://{settings.storage.bucket}"
         return AtlasPaths(
-            lakehouse_root= base_path,
+            lakehouse_root=base_path,
             checkpoint_root=f"{base_path}/checkpoints",
             quarantine_root=f"{base_path}/quarantine",
+            snapshot_root=f"{base_path}/snapshots",
         )
     return AtlasPaths(
         lakehouse_root=settings.storage.lakehouse_root,
         checkpoint_root=settings.storage.checkpoint_root,
         quarantine_root=settings.storage.quarantine_root,
+        snapshot_root=settings.storage.snapshot_root,
     )

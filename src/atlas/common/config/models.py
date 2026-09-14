@@ -1,9 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from pydantic import model_validator
-
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class AtlasBaseSettings(BaseModel):
@@ -33,10 +31,11 @@ class SparkSettings(AtlasBaseSettings):
 class StorageSettings(AtlasBaseSettings):
     """Storage locations used by Atlas pipelines."""
 
-    mode: Literal["local","object_store"] = "local"
+    mode: Literal["local", "object_store"] = "local"
     lakehouse_root: Path
     checkpoint_root: Path
     quarantine_root: Path
+    snapshot_root: Path
 
     endpoint: str | None = None
     bucket: str | None = None
@@ -48,13 +47,13 @@ class StorageSettings(AtlasBaseSettings):
         if self.mode == "local":
             return self
         if self.mode == "object_store":
-            required_fields = {"endpoint": self.endpoint, "bucket": self.bucket, "access_key": self.access_key,
-                               "secret_key": self.secret_key}
-            missing_fields = [
-                field_name
-                for field_name, value in required_fields.items()
-                if value is None
-            ]
+            required_fields = {
+                "endpoint": self.endpoint,
+                "bucket": self.bucket,
+                "access_key": self.access_key,
+                "secret_key": self.secret_key,
+            }
+            missing_fields = [field_name for field_name, value in required_fields.items() if value is None]
             if missing_fields:
                 raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
             return self
@@ -69,11 +68,27 @@ class LoggingSettings(AtlasBaseSettings):
     log_directory: Path
     destination: Literal["console", "file", "both"] = "console"
 
+class KafkaSettings(AtlasBaseSettings):
+    """Kafka configuration settings."""
+    bootstrap_servers: str
+
+class CustomerSettings(AtlasBaseSettings):
+    """Customer-level configuration settings."""
+    customers_topic: str
+    customer_addresses_topic: str
+    customer_consents_topic: str
+
+class ReconciliationRunSettings(AtlasBaseSettings):
+    """Reconciliation-level configuration settings."""
+    bucket_count: int = Field(gt=0)
 
 class AtlasSettings(AtlasBaseSettings):
     """Root configuration object for the Atlas platform."""
-
     application: ApplicationSettings
     spark: SparkSettings
     storage: StorageSettings
     logging: LoggingSettings
+    kafka: KafkaSettings
+    customer:CustomerSettings
+    reconciliation: ReconciliationRunSettings
+

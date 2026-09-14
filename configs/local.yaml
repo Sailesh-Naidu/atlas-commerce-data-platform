@@ -8,10 +8,11 @@ spark:
   adaptive_query_execution: True
 
 storage:
-  mode: object_store
+  mode: local
   lakehouse_root: data/lakehouse
   checkpoint_root: data/checkpoint
   quarantine_root: data/quarantine
+  snapshot_root: data/postgres/snapshots
 
   endpoint: http://localhost:9000
   bucket: atlas-lakehouse
@@ -22,3 +23,9 @@ logging:
   format: text
   log_directory: ./log
   destination: console
+
+kafka:
+  bootstrap_servers: localhost:9092
+
+reconciliation:
+  bucket_count: 4
