@@ -1,5 +1,7 @@
+import time
 import uuid
 
+import structlog
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -24,6 +26,7 @@ from atlas.silver.customer.reconciliation.reconciliation_common import (
     persist_reconciliation_results,
 )
 
+logger = structlog.get_logger(__name__)
 
 def get_customer_address_snapshot_schema() -> StructType:
     """
@@ -206,41 +209,79 @@ def run_customer_address_reconciliation(snapshot_as_of: str) -> None:
     Execute end-to-end reconciliation between the authoritative customer address
     snapshot and reconstructed Customer Address Silver CDC state.
     """
-    settings, spark = initialize_atlas()
-
-    run_summary_path = get_reconciliation_paths(settings, "customer", "customer_addresses", "run_summary")
-    exception_detail_path = get_reconciliation_paths(settings, "customer", "customer_addresses", "exception_detail")
-
-    if not snapshot_as_of:
-        raise ValueError("snapshot_as_of is required for customer address reconciliation")
-
-    customer_address_snapshot_path = get_snapshot_paths(settings, "customer_addresses", snapshot_as_of)
-
     reconciliation_run_id = str(uuid.uuid4())
-    bucket_count = settings.reconciliation.bucket_count
+    start_time = time.perf_counter()
+    try:
+        settings, spark = initialize_atlas()
 
-    customer_address_reconciliation_columns = ["customer_id","address_type","address_line_1","address_line_2","city","state",
-        "postal_code","country","is_primary","updated_at",]
+        run_summary_path = get_reconciliation_paths(settings, "customer", "customer_addresses", "run_summary")
+        exception_detail_path = get_reconciliation_paths(settings, "customer", "customer_addresses", "exception_detail")
 
-    snapshot_valid_records = get_address_snapshot_valid_records(spark, customer_address_snapshot_path, snapshot_as_of)
+        if not snapshot_as_of:
+            raise ValueError("snapshot_as_of is required for customer address reconciliation")
 
-    reconstructed_cdc_address_state = get_customer_address_expected_state(settings, spark, snapshot_as_of, reconciliation_run_id)
+        customer_address_snapshot_path = get_snapshot_paths(settings, "customer_addresses", snapshot_as_of)
 
-    normalized_reconciliation_columns = get_normalized_address_reconciliation_columns()
+        logger.info(
+            "reconciliation_started",
+            reconciliation_run_id=reconciliation_run_id,
+            entity_name="customer_addresses",
+            snapshot_as_of=snapshot_as_of,
+        )
 
-    final_reconciliation_exceptions = get_reconciliation_records(bucket_count,snapshot_valid_records,reconstructed_cdc_address_state,
-                                                                 normalized_reconciliation_columns,"address_id",
-                                                                 customer_address_reconciliation_columns,)
+        bucket_count = settings.reconciliation.bucket_count
 
-    final_reconciliation_exceptions = get_final_reconciliation_metadata(final_reconciliation_exceptions,snapshot_as_of,
-                                                                        "customer_addresses",reconciliation_run_id,)
+        customer_address_reconciliation_columns = ["customer_id","address_type","address_line_1","address_line_2","city","state",
+            "postal_code","country","is_primary","updated_at",]
 
-    reconciliation_run_metrics = get_reconciliation_run_metrics(snapshot_valid_records,reconstructed_cdc_address_state,
-                                                                final_reconciliation_exceptions,reconciliation_run_id,snapshot_as_of,
-                                                                "customer_addresses",)
+        snapshot_valid_records = get_address_snapshot_valid_records(spark, customer_address_snapshot_path, snapshot_as_of)
 
-    persist_reconciliation_results(reconciliation_run_metrics,final_reconciliation_exceptions,
-                                   run_summary_path,exception_detail_path,)
+        reconstructed_cdc_address_state = get_customer_address_expected_state(settings, spark, snapshot_as_of, reconciliation_run_id)
+
+        normalized_reconciliation_columns = get_normalized_address_reconciliation_columns()
+
+        final_reconciliation_exceptions = get_reconciliation_records(bucket_count,snapshot_valid_records,reconstructed_cdc_address_state,
+                                                                     normalized_reconciliation_columns,"address_id",
+                                                                     customer_address_reconciliation_columns,)
+
+        final_reconciliation_exceptions = get_final_reconciliation_metadata(final_reconciliation_exceptions,snapshot_as_of,
+                                                                            "customer_addresses",reconciliation_run_id,)
+
+        reconciliation_run_metrics = get_reconciliation_run_metrics(snapshot_valid_records,reconstructed_cdc_address_state,
+                                                                    final_reconciliation_exceptions,reconciliation_run_id,snapshot_as_of,
+                                                                    "customer_addresses",)
+
+        persist_reconciliation_results(reconciliation_run_metrics,final_reconciliation_exceptions,
+                                       run_summary_path,exception_detail_path,)
+
+        summary = reconciliation_run_metrics.first()
+
+        logger.info(
+            "reconciliation_completed",
+            reconciliation_run_id=reconciliation_run_id,
+            entity_name="customer_addresses",
+            snapshot_as_of=snapshot_as_of,
+            snapshot_row_count=summary.snapshot_row_count,
+            cdc_row_count=summary.cdc_row_count,
+            matched_row_count=summary.matched_row_count,
+            exception_count=summary.exception_count,
+            missing_in_cdc_count=summary.missing_in_cdc_count,
+            missing_in_snapshot_count=summary.missing_in_snapshot_count,
+            checksum_mismatch_count=summary.checksum_mismatch_count,
+            overall_status=summary.overall_status,
+            duration_seconds=round(time.perf_counter() - start_time, 3),
+        )
+
+    except Exception as exc:
+        logger.error(
+            "reconciliation_failed",
+            reconciliation_run_id=reconciliation_run_id,
+            entity_name="customer_addresses",
+            snapshot_as_of=snapshot_as_of,
+            duration_seconds=round(time.perf_counter() - start_time, 3),
+            error=str(exc),
+        )
+        raise
 
 
 if __name__ == "__main__":
